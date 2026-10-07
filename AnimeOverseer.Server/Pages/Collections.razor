@@ -57,7 +57,7 @@
             </div>
             @if (selected.Type == CollectionType.Manual)
             {
-                <div class="collection-add"><input @bind="animeQuery" @bind:event="oninput" @bind:after="SearchAnimeAsync" placeholder="Quick search cached anime…" />
+                <div class="collection-add"><input class="form-input" type="search" @bind="animeQuery" @bind:event="oninput" @bind:after="SearchAnimeAsync" placeholder="Quick search cached anime…" aria-label="Quick search cached anime" />
                     @if (searchResults.Count > 0) { <div class="collection-search-results">@foreach (var anime in searchResults) { <button @onclick="() => AddAnimeAsync(anime.Id)"><span>@anime.Title</span><small>@anime.Type · @(anime.StartDate?.Year.ToString() ?? "Unknown")</small></button> }</div> }
                 </div>
                 <details class="collection-catalogue-browser" open>
