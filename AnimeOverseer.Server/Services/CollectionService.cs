@@ -142,9 +142,22 @@ public class CollectionService(AnimeDbContext db)
         db.AnimeCollectionItems.Remove(item); await db.SaveChangesAsync();
     }
 
-    public async Task<List<Anime>> SearchAnimeAsync(string query) => string.IsNullOrWhiteSpace(query) ? [] : await Animes()
-        .Where(anime => anime.Title.Contains(query) || (anime.OriginalTitle != null && anime.OriginalTitle.Contains(query)))
-        .OrderBy(anime => anime.Title).Take(12).ToListAsync();
+    public async Task<List<Anime>> SearchAnimeAsync(string query, FilterState? filters = null, int take = 12)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(take);
+        query = query.Trim();
+        if (query.Length == 0) return [];
+        var normalizedQuery = query.ToLower();
+
+        return await FilterQueryBuilder.Apply(Animes(), filters ?? new FilterState())
+            .Where(anime => anime.Title.ToLower().Contains(normalizedQuery)
+                || (anime.OriginalTitle != null && anime.OriginalTitle.ToLower().Contains(normalizedQuery))
+                || anime.TitleAliases.Any(alias => alias.Title.ToLower().Contains(normalizedQuery)))
+            .OrderBy(anime => anime.Title)
+            .ThenBy(anime => anime.Id)
+            .Take(take)
+            .ToListAsync();
+    }
 
     public static FilterState Deserialize(string? json)
     {

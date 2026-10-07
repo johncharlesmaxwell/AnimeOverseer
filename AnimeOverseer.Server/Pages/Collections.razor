@@ -57,25 +57,30 @@
             </div>
             @if (selected.Type == CollectionType.Manual)
             {
-                <div class="collection-add"><input class="form-input" type="search" @bind="animeQuery" @bind:event="oninput" @bind:after="SearchAnimeAsync" placeholder="Quick search cached anime…" aria-label="Quick search cached anime" />
-                    @if (searchResults.Count > 0) { <div class="collection-search-results">@foreach (var anime in searchResults) { <button @onclick="() => AddAnimeAsync(anime.Id)"><span>@anime.Title</span><small>@anime.Type · @(anime.StartDate?.Year.ToString() ?? "Unknown")</small></button> }</div> }
-                </div>
+                <div class="collection-add"><input class="form-input" type="search" @bind="animeQuery" @bind:event="oninput" @bind:after="RefreshManualCandidatesAsync" placeholder="Quick search cached anime…" aria-label="Quick search cached anime" /></div>
                 <details class="collection-catalogue-browser" open>
                     <summary>Browse cached catalogue</summary>
                     <FilterBuilder State="manualFilters" OnChanged="RefreshManualCandidatesAsync" AvailableGenres="genres" AvailableThemes="themes" AvailableDemographics="demographics" />
-                    <p class="collection-filter-summary">Showing up to 200 matching anime from the local cache. Select one to add it to this collection.</p>
-                    <div class="synced-anime-grid collection-catalogue-grid">
-                        @foreach (var anime in manualCandidates)
-                        {
-                            <button class="synced-anime-card collection-catalogue-card" @onclick="() => AddAnimeAsync(anime.Id)" title="Add @anime.Title">
-                                <div class="synced-anime-image-wrapper">
-                                    @if (!string.IsNullOrEmpty(anime.DisplayLocalImagePath) || !string.IsNullOrEmpty(anime.DisplayImageUrl)) { <img class="synced-anime-image" src="@(anime.DisplayLocalImagePath ?? anime.DisplayImageUrl)" alt="@anime.Title cover" /> }
-                                    else { <div class="synced-anime-placeholder">&#x1F3AC;</div> }
-                                </div>
-                                <span class="synced-anime-title">@anime.Title</span>
-                            </button>
-                        }
-                    </div>
+                    <p class="collection-filter-summary">Showing up to 200 cached anime matching the quick search and filters. Select one to add it to this collection.</p>
+                    @if (manualCandidates.Count == 0)
+                    {
+                        <p class="collection-catalogue-empty">No cached anime match the current search and filters.</p>
+                    }
+                    else
+                    {
+                        <div class="synced-anime-grid collection-catalogue-grid">
+                            @foreach (var anime in manualCandidates)
+                            {
+                                <button class="synced-anime-card collection-catalogue-card" @onclick="() => AddAnimeAsync(anime.Id)" title="Add @anime.Title">
+                                    <div class="synced-anime-image-wrapper">
+                                        @if (!string.IsNullOrEmpty(anime.DisplayLocalImagePath) || !string.IsNullOrEmpty(anime.DisplayImageUrl)) { <img class="synced-anime-image" src="@(anime.DisplayLocalImagePath ?? anime.DisplayImageUrl)" alt="@anime.Title cover" /> }
+                                        else { <div class="synced-anime-placeholder">&#x1F3AC;</div> }
+                                    </div>
+                                    <span class="synced-anime-title">@anime.Title</span>
+                                </button>
+                            }
+                        </div>
+                    }
                 </details>
             }
             else
@@ -113,7 +118,7 @@
     [Parameter] public int? CollectionId { get; set; }
     private List<AnimeCollection> collections = [];
     private AnimeCollection? selected;
-    private List<Anime> collectionAnime = [], searchResults = [], manualCandidates = [];
+    private List<Anime> collectionAnime = [], manualCandidates = [];
     private List<string> genres = [], themes = [], demographics = [];
     private bool isLoading, editing;
     private int defaultPageSize = CollectionPagingSettings.DefaultPageSize;
@@ -146,7 +151,7 @@
         selected = await CollectionService.GetAsync(id);
         pageSizeOverride = CollectionPagingSettings.Read(await SettingsService.GetAsync(CollectionPagingSettings.OverrideKey(id)));
         await LoadPageAsync();
-        searchResults = []; animeQuery = string.Empty; manualFilters = new();
+        animeQuery = string.Empty; manualFilters = new();
         manualCandidates = selected?.Type == CollectionType.Manual ? await AnimeDataSource.GetFilteredAsync(manualFilters, 0, 200) : [];
     }
 
@@ -189,8 +194,13 @@
         await RefreshSelectedAsync();
     }
     private async Task DeleteSelectedAsync() { if (selected is null) return; await CollectionService.DeleteAsync(selected.Id); selected = null; collectionAnime = []; collections = await CollectionService.GetAllAsync(); Navigation.NavigateTo("/collections"); }
-    private async Task SearchAnimeAsync() { searchResults = animeQuery.Trim().Length < 2 ? [] : await CollectionService.SearchAnimeAsync(animeQuery); }
-    private async Task RefreshManualCandidatesAsync() { manualCandidates = await AnimeDataSource.GetFilteredAsync(manualFilters, 0, 200); }
-    private async Task AddAnimeAsync(int animeId) { if (selected is null) return; await CollectionService.AddAnimeAsync(selected.Id, animeId); animeQuery = string.Empty; searchResults = []; await RefreshSelectedAsync(); }
+    private async Task RefreshManualCandidatesAsync()
+    {
+        var query = animeQuery.Trim();
+        manualCandidates = query.Length < 2
+            ? await AnimeDataSource.GetFilteredAsync(manualFilters, 0, 200)
+            : await CollectionService.SearchAnimeAsync(query, manualFilters, 200);
+    }
+    private async Task AddAnimeAsync(int animeId) { if (selected is null) return; await CollectionService.AddAnimeAsync(selected.Id, animeId); animeQuery = string.Empty; await RefreshSelectedAsync(); }
     private async Task RemoveAnimeAsync(int animeId) { if (selected is null) return; await CollectionService.RemoveAnimeAsync(selected.Id, animeId); await RefreshSelectedAsync(); }
 }

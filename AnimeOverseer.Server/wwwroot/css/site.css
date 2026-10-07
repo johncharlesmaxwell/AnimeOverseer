@@ -258,10 +258,6 @@ img {
 .collection-type-label { margin: 0 0 .25rem; font-size: .82rem; text-transform: uppercase; letter-spacing: .06em; }
 .collection-add { position: relative; max-width: 520px; margin: 1rem 0; }
 .collection-add input, .collection-editor input, .collection-editor textarea { width: 100%; box-sizing: border-box; }
-.collection-search-results { position: absolute; z-index: 5; width: 100%; background: var(--card-bg, #1f2937); border: 1px solid var(--border-color, #374151); border-radius: .4rem; overflow: hidden; }
-.collection-search-results button { display: flex; width: 100%; justify-content: space-between; padding: .65rem .8rem; background: transparent; color: inherit; border: 0; text-align: left; cursor: pointer; }
-.collection-search-results button:hover { background: var(--hover-bg, #374151); }
-.collection-search-results small { color: var(--text-muted, #9ca3af); }
 .collection-editor { max-width: 800px; }
 .collection-editor > label { display: block; margin: 1rem 0; font-weight: 600; }
 .collection-editor input, .collection-editor textarea { display: block; margin-top: .4rem; padding: .65rem; background: var(--input-bg, #111827); color: inherit; border: 1px solid var(--border-color, #374151); border-radius: .35rem; font: inherit; }
@@ -306,6 +302,7 @@ img {
 .collection-catalogue-browser { margin: 1.25rem 0; border: 1px solid var(--border-color); border-radius: var(--radius-sm); }
 .collection-catalogue-browser > summary { cursor: pointer; padding: .75rem 1rem; font-weight: 600; }
 .collection-catalogue-browser .filter-builder { margin: 0 1rem; }
+.collection-catalogue-empty { padding: 2rem 1rem; color: var(--text-muted); text-align: center; }
 .collection-catalogue-grid { max-height: 500px; }
 .collection-catalogue-card { width: 100%; padding: 0; text-align: left; cursor: pointer; font: inherit; }
 .anime-card-draggable { cursor: grab; }

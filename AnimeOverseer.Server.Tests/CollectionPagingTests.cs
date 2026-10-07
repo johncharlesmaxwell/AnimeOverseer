@@ -59,6 +59,28 @@ public sealed class CollectionPagingTests : SqliteIntegrationTestBase
     }
 
     [Fact]
+    public async Task Cached_search_combines_text_aliases_and_filters()
+    {
+        await using var db = CreateDb();
+        var season = await AddSeasonAsync(db);
+        db.Animes.AddRange(
+            new Anime { Title = "Goblin Slayer", Type = "TV", SeasonId = season.Id },
+            new Anime { Title = "Localized title", Type = "TV", SeasonId = season.Id, TitleAliases = [new() { Title = "Goblin Hero" }] },
+            new Anime { Title = "Goblin Movie", Type = "Movie", SeasonId = season.Id },
+            new Anime { Title = "Unrelated", Type = "TV", SeasonId = season.Id });
+        await db.SaveChangesAsync();
+        var service = new CollectionService(db);
+        var filters = new FilterState
+        {
+            Groups = [new FilterGroup { Conditions = [new FilterCondition { Field = FilterField.Type, Operator = FilterOperator.Equals, Value = "TV" }] }]
+        };
+
+        var results = await service.SearchAnimeAsync("goblin", filters, 200);
+
+        Assert.Equal(["Goblin Slayer", "Localized title"], results.Select(anime => anime.Title));
+    }
+
+    [Fact]
     public async Task Homepage_collections_can_be_selected_and_loaded_in_slices()
     {
         await using var db = CreateDb();
