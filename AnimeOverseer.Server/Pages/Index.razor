@@ -7,6 +7,7 @@
 @inject NavigationManager NavManager
 @inject MediaLibraryService MediaLibraryService
 @inject SettingsService SettingsService
+@inject CollectionService CollectionService
 @inject CollectionDragService CollectionDragService
 @implements IDisposable
 
@@ -25,6 +26,13 @@
             <button class="preset-filter" @onclick="SetPresetTopSpecials">Top Specials</button>
             <button class="preset-filter" @onclick="SetPresetMostPopular">Most Popular</button>
             <button class="preset-filter" @onclick="SetPresetMostFavorited">Most Favorited</button>
+            @foreach (var collection in homepageCollections)
+            {
+                <button class="preset-filter collection-preset-filter @(activeCollectionId == collection.Id ? "active" : "")"
+                        aria-pressed="@(activeCollectionId == collection.Id)"
+                        title="Show the @collection.Name collection"
+                        @onclick="() => SetCollectionFilterAsync(collection.Id)">@collection.Name</button>
+            }
         </div>
 
         <div class="filters-row">
@@ -59,6 +67,10 @@
         {
             <span>@DisplayedAnimes.Count result@(DisplayedAnimes.Count != 1 ? "s" : "") for "@searchQuery"</span>
         }
+        else if (activeCollectionId is not null)
+        {
+            <span>@DisplayedAnimes.Count of @totalCount anime shown from @ActiveCollectionName</span>
+        }
         else if (filterState.IsActive || hideInLibrary || HasNsfwFilter)
         {
             <span>@DisplayedAnimes.Count of @allAnimes.Count loaded anime@(allAnimes.Count != 1 ? "s" : "") shown</span>
@@ -82,7 +94,11 @@
             <span class="empty-icon">&#x1F3AC;</span>
             <h3>No anime found</h3>
             <p>
-                @if ((filterState.IsActive || hideInLibrary || HasNsfwFilter) && allAnimes.Count > 0)
+                @if (activeCollectionId is not null)
+                {
+                    <text>No anime match the active options in @ActiveCollectionName.</text>
+                }
+                else if ((filterState.IsActive || hideInLibrary || HasNsfwFilter) && allAnimes.Count > 0)
                 {
                     <text>No anime match the active filters. Try adjusting or clearing them.</text>
                 }
@@ -140,6 +156,9 @@
     private bool hideInLibrary;
     private bool showNsfw;
     private string? quickFilterPreset;
+    private int? activeCollectionId;
+    private List<AnimeCollection> homepageCollections = [];
+    private string ActiveCollectionName => homepageCollections.FirstOrDefault(collection => collection.Id == activeCollectionId)?.Name ?? "this collection";
     private List<string> nsfwGenres = [];
     private List<string> nsfwThemes = [];
 
@@ -175,6 +194,7 @@
     protected override async Task OnInitializedAsync()
     {
         NavManager.LocationChanged += OnLocationChanged;
+        homepageCollections = await CollectionService.GetHomepageAsync();
         await RestoreFromUrl(NavManager.Uri);
         await Task.WhenAll(LoadTagsAsync(), LoadNsfwFiltersAsync(), MediaLibraryService.EnsureRefreshedAsync());
     }
@@ -206,6 +226,11 @@
         hideInLibrary = qs.TryGetValue("hideInLibrary", out var hide) && hide == "1";
         showNsfw = qs.TryGetValue("showNsfw", out var show) && show == "1";
         quickFilterPreset = qs.GetValueOrDefault("preset") is { } preset && IsQuickFilterPreset(preset) ? preset : null;
+        activeCollectionId = qs.TryGetValue("collection", out var collectionValue)
+            && int.TryParse(collectionValue, out var collectionId)
+            && homepageCollections.Any(collection => collection.Id == collectionId)
+                ? collectionId
+                : null;
         filterState = qs.TryGetValue("filters", out var f)
             ? DeserializeFilters(f) ?? new FilterState()
             : new FilterState();
@@ -219,6 +244,8 @@
 
         if (!string.IsNullOrWhiteSpace(searchQuery))
             await LoadSearch();
+        else if (activeCollectionId is not null)
+            await LoadCollectionFilter();
         else if (quickFilterPreset is not null)
             await LoadQuickFilter();
         else if (filterState.IsActive)
@@ -246,6 +273,8 @@
             parts.Add("showNsfw=1");
         if (quickFilterPreset is not null)
             parts.Add($"preset={quickFilterPreset}");
+        if (activeCollectionId is not null)
+            parts.Add($"collection={activeCollectionId}");
         if (filterState.IsActive)
             parts.Add($"filters={Uri.EscapeDataString(SerializeFilters(filterState))}");
         if (sortState.IsActive)
@@ -463,11 +492,44 @@
         }
     }
 
+    private async Task LoadCollectionFilter(bool append = false)
+    {
+        var collection = homepageCollections.FirstOrDefault(item => item.Id == activeCollectionId);
+        if (collection is null) return;
+
+        if (append) isLoadingMore = true;
+        else isLoading = true;
+        StateHasChanged();
+        try
+        {
+            var skip = append ? allAnimes.Count : 0;
+            var (items, count) = await CollectionService.GetAnimeSliceAsync(collection, skip, pageSize + 1);
+            hasMore = items.Count > pageSize;
+            if (hasMore) items.RemoveAt(pageSize);
+            totalCount = count;
+            if (append) allAnimes.AddRange(items);
+            else allAnimes = items;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error loading collection {collection.Id}: {ex.Message}");
+            if (!append) allAnimes = [];
+        }
+        finally
+        {
+            isLoading = false;
+            isLoadingMore = false;
+            StateHasChanged();
+        }
+    }
+
     // ── User actions ─────────────────────────────────────────
 
     private async Task LoadMore()
     {
-        if (quickFilterPreset is not null && string.IsNullOrWhiteSpace(searchQuery))
+        if (activeCollectionId is not null && string.IsNullOrWhiteSpace(searchQuery))
+            await LoadCollectionFilter(append: true);
+        else if (quickFilterPreset is not null && string.IsNullOrWhiteSpace(searchQuery))
             await LoadQuickFilter(append: true);
         else if (filterState.IsActive && string.IsNullOrWhiteSpace(searchQuery))
             await LoadFiltered(append: true);
@@ -482,7 +544,9 @@
         allAnimes  = new();
         totalCount = 0;
         PushUrl(replace: true);
-        if (quickFilterPreset is not null)
+        if (activeCollectionId is not null)
+            await LoadCollectionFilter();
+        else if (quickFilterPreset is not null)
             await LoadQuickFilter();
         else if (filterState.IsActive)
             await LoadFiltered();
@@ -493,6 +557,7 @@
     private async Task OnFilterChanged()
     {
         quickFilterPreset = null;
+        activeCollectionId = null;
         allAnimes  = new();
         totalCount = 0;
         PushUrl(replace: true);
@@ -536,6 +601,7 @@
     private async Task SetPresetAllAnime()
     {
         quickFilterPreset = null;
+        activeCollectionId = null;
         filterState = new FilterState();
         sortState = new SortState();
         allAnimes = new();
@@ -548,6 +614,7 @@
     private async Task SetPresetTopAiring()
     {
         quickFilterPreset = "top-airing";
+        activeCollectionId = null;
         filterState = new FilterState();
         sortState = new SortState();
         allAnimes = new();
@@ -560,6 +627,7 @@
     private async Task SetPresetTopUpcoming()
     {
         quickFilterPreset = "top-upcoming";
+        activeCollectionId = null;
         filterState = new FilterState();
         sortState = new SortState();
         allAnimes = new();
@@ -572,6 +640,7 @@
     private async Task SetPresetTopTVSeries()
     {
         quickFilterPreset = "top-tv";
+        activeCollectionId = null;
         filterState = new FilterState();
         sortState = new SortState();
         allAnimes = new();
@@ -584,6 +653,7 @@
     private async Task SetPresetTopMovies()
     {
         quickFilterPreset = "top-movies";
+        activeCollectionId = null;
         filterState = new FilterState();
         sortState = new SortState();
         allAnimes = new();
@@ -596,6 +666,7 @@
     private async Task SetPresetTopOVAs()
     {
         quickFilterPreset = "top-ovas";
+        activeCollectionId = null;
         filterState = new FilterState();
         sortState = new SortState();
         allAnimes = new();
@@ -608,6 +679,7 @@
     private async Task SetPresetTopONAs()
     {
         quickFilterPreset = "top-onas";
+        activeCollectionId = null;
         filterState = new FilterState();
         sortState = new SortState();
         allAnimes = new();
@@ -620,6 +692,7 @@
     private async Task SetPresetTopSpecials()
     {
         quickFilterPreset = "top-specials";
+        activeCollectionId = null;
         filterState = new FilterState();
         sortState = new SortState();
         allAnimes = new();
@@ -632,6 +705,7 @@
     private async Task SetPresetMostPopular()
     {
         quickFilterPreset = "most-popular";
+        activeCollectionId = null;
         filterState = new FilterState();
         sortState = new SortState();
         allAnimes = new();
@@ -644,6 +718,7 @@
     private async Task SetPresetMostFavorited()
     {
         quickFilterPreset = "most-favorited";
+        activeCollectionId = null;
         filterState = new FilterState();
         sortState = new SortState();
         allAnimes = new();
@@ -651,6 +726,19 @@
         PushUrl(replace: true);
         if (!string.IsNullOrWhiteSpace(searchQuery)) await LoadSearch();
         else await LoadQuickFilter();
+    }
+
+    private async Task SetCollectionFilterAsync(int collectionId)
+    {
+        activeCollectionId = collectionId;
+        quickFilterPreset = null;
+        searchQuery = string.Empty;
+        filterState = new FilterState();
+        sortState = new SortState();
+        allAnimes = [];
+        totalCount = 0;
+        PushUrl(replace: true);
+        await LoadCollectionFilter();
     }
 
     // ── Serialisation ────────────────────────────────────────

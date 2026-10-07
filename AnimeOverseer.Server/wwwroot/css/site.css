@@ -2158,6 +2158,17 @@ img {
 
 .preset-filter:active { transform: translateY(0); }
 
+.collection-preset-filter {
+    color: var(--accent-light);
+    border-color: rgba(139, 92, 246, 0.45);
+}
+
+.collection-preset-filter.active {
+    color: #fff;
+    background: var(--accent-primary);
+    border-color: var(--accent-primary);
+}
+
 /* Remove button */
 .condition-remove {
     background: transparent;

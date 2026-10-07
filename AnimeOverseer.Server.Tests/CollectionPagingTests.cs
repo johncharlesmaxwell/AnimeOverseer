@@ -59,6 +59,34 @@ public sealed class CollectionPagingTests : SqliteIntegrationTestBase
     }
 
     [Fact]
+    public async Task Homepage_collections_can_be_selected_and_loaded_in_slices()
+    {
+        await using var db = CreateDb();
+        var season = await AddSeasonAsync(db);
+        var anime = Enumerable.Range(1, 3)
+            .Select(i => new Anime { Title = $"Anime {i}", SeasonId = season.Id })
+            .ToList();
+        db.Animes.AddRange(anime);
+        await db.SaveChangesAsync();
+        var service = new CollectionService(db);
+        var collection = await service.CreateAsync("Homepage", null, CollectionType.Manual, null);
+        foreach (var item in anime) await service.AddAnimeAsync(collection.Id, item.Id);
+
+        Assert.Empty(await service.GetHomepageAsync());
+        Assert.True(await service.SetShowOnHomepageAsync(collection.Id, true));
+        Assert.Equal(collection.Id, Assert.Single(await service.GetHomepageAsync()).Id);
+
+        var first = await service.GetAnimeSliceAsync(collection, 0, 2);
+        var second = await service.GetAnimeSliceAsync(collection, 2, 2);
+        Assert.Equal(3, first.TotalCount);
+        Assert.Equal(anime.Take(2).Select(item => item.Id), first.Items.Select(item => item.Id));
+        Assert.Equal(anime.Last().Id, Assert.Single(second.Items).Id);
+
+        Assert.True(await service.SetShowOnHomepageAsync(collection.Id, false));
+        Assert.Empty(await service.GetHomepageAsync());
+    }
+
+    [Fact]
     public async Task Preferences_persist_independently_and_can_return_to_default()
     {
         await using (var db = CreateDb())

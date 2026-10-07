@@ -53,7 +53,7 @@
         {
             <div class="collection-header">
                 <div><p class="collection-type-label">@(selected.Type == CollectionType.Manual ? "Manual collection" : "Automatic collection")</p><h1>@selected.Name</h1>@if (!string.IsNullOrWhiteSpace(selected.Description)) { <p>@selected.Description</p> }</div>
-                <div><button class="btn" @onclick="EditSelected">Edit</button><button class="btn btn-danger" @onclick="DeleteSelectedAsync">Delete</button></div>
+                <div><button class="btn" aria-pressed="@selected.ShowOnHomepage" @onclick="ToggleHomepageAsync">@(selected.ShowOnHomepage ? "Remove from homepage" : "Add to homepage")</button><button class="btn" @onclick="EditSelected">Edit</button><button class="btn btn-danger" @onclick="DeleteSelectedAsync">Delete</button></div>
             </div>
             @if (selected.Type == CollectionType.Manual)
             {
@@ -182,6 +182,12 @@
         else { await CollectionService.UpdateAsync(selected.Id, editName, editDescription, editType, editFilters); editing = false; await RefreshSelectedAsync(); }
     }
     private async Task RefreshSelectedAsync() { collections = await CollectionService.GetAllAsync(); if (selected is not null) await LoadSelectedAsync(selected.Id); }
+    private async Task ToggleHomepageAsync()
+    {
+        if (selected is null) return;
+        await CollectionService.SetShowOnHomepageAsync(selected.Id, !selected.ShowOnHomepage);
+        await RefreshSelectedAsync();
+    }
     private async Task DeleteSelectedAsync() { if (selected is null) return; await CollectionService.DeleteAsync(selected.Id); selected = null; collectionAnime = []; collections = await CollectionService.GetAllAsync(); Navigation.NavigateTo("/collections"); }
     private async Task SearchAnimeAsync() { searchResults = animeQuery.Trim().Length < 2 ? [] : await CollectionService.SearchAnimeAsync(animeQuery); }
     private async Task RefreshManualCandidatesAsync() { manualCandidates = await AnimeDataSource.GetFilteredAsync(manualFilters, 0, 200); }

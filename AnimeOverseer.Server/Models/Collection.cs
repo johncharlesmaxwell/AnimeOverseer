@@ -20,6 +20,8 @@ public class AnimeCollection
     // JSON representation of FilterState for automatic collections.
     public string? FilterJson { get; set; }
 
+    public bool ShowOnHomepage { get; set; }
+
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
     public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
     public List<AnimeCollectionItem> Items { get; set; } = new();
