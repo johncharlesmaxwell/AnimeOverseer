@@ -289,13 +289,99 @@ img {
 .formulae-menu button:hover { background: var(--bg-card-hover); }
 .formulae-menu code { color: var(--accent-light); }
 .formulae-menu span { color: var(--text-muted); font-size: .72rem; }
-.formula-dialog-backdrop { position: fixed; z-index: 100; inset: 0; display: grid; place-items: center; padding: 1rem; background: rgba(0, 0, 0, .62); }
+.formula-dialog-backdrop { position: fixed; z-index: 3000; inset: 0; display: grid; place-items: center; padding: 1rem; background: rgba(0, 0, 0, .62); }
 .formula-dialog { width: min(42rem, 100%); max-height: calc(100vh - 2rem); overflow: auto; padding: 1.1rem; color: var(--text-primary); background: var(--bg-card); border: 1px solid var(--border-color); border-radius: var(--radius); box-shadow: var(--shadow-lg); }
 .formula-dialog header, .formula-dialog footer { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; }
 .formula-dialog h3 { margin: 0; }.formula-dialog p, .formula-dialog small { color: var(--text-muted); }.formula-dialog-input { box-sizing: border-box; width: 100%; margin: 1rem 0; }
 .formula-dialog-section { margin-top: 1rem; }.formula-token-list { display: flex; flex-wrap: wrap; gap: .4rem; margin-top: .45rem; }
 .formula-token-list button { padding: .35rem .5rem; color: var(--text-primary); background: var(--bg-tertiary); border: 1px solid var(--border-color); border-radius: 4px; cursor: pointer; }.formula-token-list button:hover { border-color: var(--accent); }
 .formula-dialog footer { justify-content: flex-end; align-items: center; margin-top: 1.2rem; }
+.sr-only { position: absolute !important; width: 1px !important; height: 1px !important; overflow: hidden !important; clip: rect(0, 0, 0, 0) !important; white-space: nowrap !important; clip-path: inset(50%) !important; }
+.btn-small { padding: .28rem .55rem; font-size: .76rem; }
+.formula-dialog--composer { width: min(76rem, 100%); max-height: calc(100vh - 2rem); overflow-x: hidden; }
+.formula-dialog--composer > header p { max-width: 58rem; margin-top: .15rem; }
+.formula-editor-tabs { display: flex; gap: .25rem; margin-top: .9rem; border-bottom: 1px solid var(--border-color); }
+.formula-editor-tabs button { padding: .5rem .75rem; color: var(--text-muted); background: transparent; border: 0; border-bottom: 2px solid transparent; cursor: pointer; }
+.formula-editor-tabs button.active { color: var(--text-primary); border-bottom-color: var(--accent); }
+.formula-editor-tabs button:disabled { cursor: not-allowed; opacity: .45; }
+.formula-examples { margin-top: .9rem; }
+.formula-section-heading { display: flex; min-height: 2.25rem; align-items: flex-start; justify-content: space-between; gap: .75rem; }
+.formula-section-heading strong, .formula-section-heading small { display: block; }
+.formula-section-heading small { margin-top: .05rem; font-size: .72rem; }
+.formula-example-list { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: .45rem; margin-top: .45rem; }
+.formula-example-list button { min-width: 0; padding: .55rem .65rem; color: var(--text-primary); background: color-mix(in srgb, var(--accent) 8%, var(--bg-tertiary)); border: 1px solid var(--border-color); border-radius: var(--radius-sm); text-align: left; cursor: pointer; }
+.formula-example-list button:hover { border-color: var(--accent); transform: translateY(-1px); }
+.formula-example-list strong, .formula-example-list span { display: block; }
+.formula-example-list span { margin-top: .15rem; color: var(--text-muted); font-size: .72rem; line-height: 1.35; }
+.formula-composer-grid { display: grid; grid-template-columns: minmax(15rem, .8fr) minmax(19rem, 1.35fr) minmax(14rem, .75fr); gap: .8rem; min-height: 28rem; margin-top: .9rem; }
+.formula-catalog, .formula-workspace, .formula-preview { min-width: 0; padding: .75rem; background: color-mix(in srgb, var(--bg-primary) 54%, transparent); border: 1px solid var(--border-color); border-radius: var(--radius-md); }
+.formula-catalog { max-height: 31rem; overflow-y: auto; }
+.formula-catalog > input { position: sticky; z-index: 2; top: 0; width: 100%; background: var(--bg-secondary); }
+.formula-token-list--vertical { display: grid; gap: .3rem; }
+.formula-token-list .expression-palette-item { display: grid; grid-template-columns: 1.55rem minmax(0, 1fr) auto; width: 100%; min-width: 0; align-items: center; gap: .45rem; padding: .42rem .5rem; border-left-width: 3px; text-align: left; }
+.expression-palette-item > span:nth-child(2) { min-width: 0; }
+.expression-palette-item strong, .expression-palette-item small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.expression-palette-item small { color: var(--text-muted); font-size: .68rem; }
+.expression-palette-item em { color: var(--text-muted); font-size: .65rem; font-style: normal; }
+.expression-palette-item:disabled { cursor: not-allowed; filter: grayscale(.65); opacity: .38; }
+.expression-node-icon { display: inline-grid; width: 1.45rem; height: 1.45rem; place-items: center; flex: 0 0 auto; color: var(--text-primary); background: color-mix(in srgb, currentColor 16%, var(--bg-primary)); border: 1px solid currentColor; border-radius: 50%; font-size: .72rem; font-weight: 800; }
+.expression-canvas { min-height: 16rem; padding: .75rem; background: var(--bg-primary); border: 1px dashed var(--border-color); border-radius: var(--radius-sm); transition: border-color var(--transition-fast), background var(--transition-fast); }
+.expression-canvas--drop-ready { background: color-mix(in srgb, var(--accent) 7%, var(--bg-primary)); border-color: var(--accent); }
+.expression-node { color: var(--text-primary); border: 1px solid var(--border-color); border-left-width: 4px; border-radius: var(--radius-sm); }
+.expression-node-heading, .expression-node--leaf { display: flex; min-width: 0; align-items: center; gap: .45rem; padding: .48rem .55rem; }
+.expression-node-heading small, .expression-node--leaf small { margin-left: auto; white-space: nowrap; }
+.expression-node-arguments { display: grid; gap: .45rem; padding: 0 .55rem .55rem 2rem; list-style: none; counter-reset: expression-argument; }
+.expression-node-arguments > li { position: relative; min-width: 0; }
+.expression-argument-label { display: block; margin: 0 0 .15rem .15rem; color: var(--text-muted); font-size: .63rem; text-transform: uppercase; letter-spacing: .04em; }
+.expression-node-arguments .expression-node { background: color-mix(in srgb, var(--bg-secondary) 70%, transparent); }
+.formula-source-summary { display: grid; gap: .2rem; margin-top: .65rem; }
+.formula-source-summary span { color: var(--text-muted); font-size: .68rem; text-transform: uppercase; letter-spacing: .04em; }
+.formula-source-summary code { overflow-wrap: anywhere; padding: .45rem; color: var(--accent-light); background: var(--bg-primary); border-radius: 4px; }
+.expression-output-type, .expression-code-valid { display: inline-flex; align-items: center; gap: .35rem; margin-top: .55rem; padding: .28rem .5rem; border: 1px solid currentColor; border-radius: 999px; font-size: .72rem; }
+.expression-type--text { color: #60a5fa !important; border-color: #3b82f6 !important; }
+.expression-type--number { color: #c084fc !important; border-color: #a855f7 !important; }
+.expression-type--boolean { color: #4ade80 !important; border-color: #22c55e !important; }
+.expression-type--date { color: #fbbf24 !important; border-color: #f59e0b !important; }
+.expression-type--collection { color: #22d3ee !important; border-color: #06b6d4 !important; }
+.expression-type--empty { color: var(--text-muted) !important; border-color: var(--border-color) !important; }
+.expression-node strong, .expression-node span:not(.expression-node-icon), .expression-palette-item strong, .expression-palette-item span { color: var(--text-primary); }
+.formula-preview label { display: block; margin-top: .4rem; color: var(--text-secondary); font-size: .72rem; }
+.formula-preview select { width: 100%; margin-top: .2rem; }
+.formula-preview-result { display: grid; gap: .15rem; margin-top: .75rem; padding: .75rem; background: var(--bg-primary); border: 1px solid var(--border-color); border-radius: var(--radius-sm); }
+.formula-preview-result span { color: var(--text-muted); font-size: .68rem; text-transform: uppercase; letter-spacing: .04em; }
+.formula-preview-result strong { overflow-wrap: anywhere; font-size: 1.05rem; }
+.formula-preview-result--valid { border-color: color-mix(in srgb, var(--success) 55%, var(--border-color)); }
+.formula-preview-result--error { border-color: color-mix(in srgb, var(--danger) 55%, var(--border-color)); }
+.formula-preview-inputs { display: grid; gap: .28rem; margin-top: .7rem; }
+.formula-preview-inputs div { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.25fr); gap: .45rem; padding-bottom: .28rem; border-bottom: 1px solid color-mix(in srgb, var(--border-color) 60%, transparent); }
+.formula-preview-inputs dt { color: var(--text-muted); font-size: .7rem; }
+.formula-preview-inputs dd { overflow-wrap: anywhere; color: var(--text-secondary); font-size: .72rem; text-align: right; }
+.formula-preview-muted { margin-top: .55rem; color: var(--text-muted); font-size: .75rem; }
+.formula-code-editor { max-width: 58rem; margin: 1rem auto 0; }
+.formula-code-editor label { display: block; }
+.formula-code-editor textarea { min-height: 12rem; resize: vertical; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; line-height: 1.55; }
+.expression-code-error { margin-top: -.55rem; padding: .55rem .65rem; color: #fecaca; background: color-mix(in srgb, var(--danger) 12%, transparent); border: 1px solid var(--danger); border-radius: var(--radius-sm); font-size: .78rem; }
+.formula-dialog-status { margin-right: auto; color: var(--text-muted); font-size: .75rem; }
+.formula-dialog--composer > footer { position: sticky; z-index: 5; bottom: 0; padding: .7rem 0 .2rem; background: var(--bg-card); border-top: 1px solid var(--border-color); }
+@media (max-width: 1050px) {
+    .formula-composer-grid { grid-template-columns: minmax(14rem, .8fr) minmax(19rem, 1.2fr); }
+    .formula-preview { grid-column: 1 / -1; }
+    .formula-example-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 720px) {
+    .formula-dialog-backdrop { padding: .35rem; }
+    .formula-dialog--composer { max-height: calc(100vh - .7rem); padding: .8rem; }
+    .formula-composer-grid { grid-template-columns: 1fr; }
+    .formula-catalog { max-height: 19rem; }
+    .formula-preview { grid-column: auto; }
+    .formula-example-list { grid-template-columns: 1fr; }
+    .formula-dialog footer { flex-wrap: wrap; }
+}
+.input-error { border-color: var(--danger, #ef4444) !important; }
+.expression-error { display: block; margin-top: -.65rem; color: var(--danger, #ef4444) !important; }
+.expression-validation-summary { margin: .75rem 0; padding: .75rem; color: var(--danger, #ef4444); border: 1px solid currentColor; border-radius: var(--radius-sm); }
+.expression-validation-summary ul { margin: .35rem 0 0; padding-left: 1.25rem; }
+.expression-execution-note { margin: .75rem 0 0; color: var(--warning); font-size: .8rem; }
 .collection-anime { position: relative; }
 .collection-remove { position: absolute; top: .5rem; right: .5rem; z-index: 2; border: 0; border-radius: .25rem; padding: .35rem .5rem; background: rgba(0,0,0,.8); color: white; cursor: pointer; }
 .btn-danger { background: #b42318; color: white; }
@@ -2119,6 +2205,10 @@ img {
 }
 
 .condition-field { width: 130px; flex-shrink: 0; }
+.condition-left-operand { display: flex; position: relative; flex: 0 0 190px; min-width: 0; align-items: center; gap: .35rem; }
+.condition-left-operand .condition-field { flex: 1; width: auto; min-width: 0; }
+.condition-field-expression { flex: 1; width: 100%; min-width: 0; }
+.condition-left-operand .expression-error { position: absolute; top: 100%; left: 0; z-index: 2; margin: .15rem 0 0; padding: .2rem .35rem; background: var(--bg-card); border-radius: 3px; white-space: nowrap; }
 .condition-op    { width: 180px; flex-shrink: 0; }
 .condition-value { flex: 1; min-width: 100px; }
 .condition-value--data {
@@ -2277,6 +2367,8 @@ img {
     .condition-op {
         width: calc(50% - 0.2rem);
     }
+
+    .condition-left-operand { flex: 1 1 calc(50% - .2rem); }
 
     .condition-value {
         width: 100%;

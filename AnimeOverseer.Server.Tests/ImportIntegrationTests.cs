@@ -23,10 +23,12 @@ public sealed class ImportIntegrationTests : SqliteIntegrationTestBase
         await db.SaveChangesAsync();
 
         var cards = await CreateCache(db).GetRecentAsync(0, 10);
+        var expressionCandidates = await CreateCache(db).GetExpressionCandidatesAsync();
 
         var card = Assert.Single(cards);
         Assert.Single(card.Images);
         Assert.Equal(preferred.Id, card.Images[0].Id);
+        Assert.Equal(2, Assert.Single(expressionCandidates).Images.Count);
     }
 
     [Fact]

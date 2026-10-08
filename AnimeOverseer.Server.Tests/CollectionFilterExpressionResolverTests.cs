@@ -48,6 +48,25 @@ public sealed class CollectionFilterExpressionResolverTests
     }
 
     [Fact]
+    public void Resolves_new_typed_functions_inside_embedded_templates()
+    {
+        var anime = new Anime
+        {
+            Title = "Example",
+            AnimeGenres = [new AnimeGenre { Genre = new Genre { Name = "Action" } }, new AnimeGenre { Genre = new Genre { Name = "Drama" } }]
+        };
+        var state = new FilterState
+        {
+            Groups = [new FilterGroup { Conditions = [new FilterCondition { Field = FilterField.Title, Value = "Genres: {{join(genres, \"|\")}}" }] }]
+        };
+
+        var resolved = CollectionFilterExpressionResolver.Resolve(state, anime: anime);
+
+        Assert.Equal("Genres: Action|Drama", resolved.Groups[0].Conditions[0].Value);
+        Assert.True(CollectionFilterExpressionResolver.RequiresAnimeContext(state));
+    }
+
+    [Fact]
     public void Resolves_every_value_in_a_multi_value_condition()
     {
         var state = new FilterState

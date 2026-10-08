@@ -2,8 +2,10 @@
 @rendermode InteractiveServer
 @using AnimeOverseer.Server.Models
 @using AnimeOverseer.Server.Services
+@using AnimeOverseer.Server.Services.Expressions
 @using System.Text.Json
 @inject IAnimeDataSource AnimeDataSource
+@inject AnimeCacheService AnimeCacheService
 @inject NavigationManager NavManager
 @inject MediaLibraryService MediaLibraryService
 @inject SettingsService SettingsService
@@ -334,13 +336,17 @@
         StateHasChanged();
         try
         {
-            if (HasLibraryFilter)
+            if (HasLibraryFilter || CollectionFilterExpressionResolver.RequiresAnimeContext(filterState))
             {
                 if (append) return;
 
-                await MediaLibraryService.EnsureRefreshedAsync();
-                var libraryFilterCandidates = await AnimeDataSource.GetFilteredAsync(new FilterState(), 0, int.MaxValue);
-                allAnimes = FilterEngine.Apply(libraryFilterCandidates, CollectionFilterExpressionResolver.Resolve(filterState), IsInLibrary);
+                if (HasLibraryFilter) await MediaLibraryService.EnsureRefreshedAsync();
+                var requiresAnimeContext = CollectionFilterExpressionResolver.RequiresAnimeContext(filterState);
+                var libraryFilterCandidates = requiresAnimeContext
+                    ? await AnimeCacheService.GetExpressionCandidatesAsync()
+                    : await AnimeDataSource.GetFilteredAsync(new FilterState(), 0, int.MaxValue);
+                allAnimes = libraryFilterCandidates.Where(anime =>
+                    FilterEngine.Apply([anime], CollectionFilterExpressionResolver.Resolve(filterState, anime: anime), IsInLibrary).Count == 1).ToList();
                 totalCount = allAnimes.Count;
                 hasMore = false;
                 return;
@@ -804,7 +810,12 @@
     {
         l = (int)group.Logic,
         c = group.Conditions.Where(FilterState.IsActiveCondition)
-            .Select(c => new { f = (int)c.Field, o = (int)c.Operator, v = c.Value, vs = c.Values, vl = (int)c.ValueLogic }).ToArray(),
+            .Select(c => new
+            {
+                f = (int)c.Field, o = (int)c.Operator, v = c.Value, vs = c.Values, vl = (int)c.ValueLogic,
+                le = c.LeftExpression?.Source,
+                re = c.RightExpressions.Select(expression => expression.Source).ToArray()
+            }).ToArray(),
         g = group.Subgroups.Where(FilterState.IsActiveGroup).Select(SerializeGroup).ToArray()
     };
 
@@ -816,7 +827,11 @@
             Field = (FilterField)c.GetProperty("f").GetInt32(), Operator = (FilterOperator)c.GetProperty("o").GetInt32(),
             Value = c.GetProperty("v").GetString() ?? string.Empty,
             Values = c.TryGetProperty("vs", out var values) ? values.EnumerateArray().Select(value => value.GetString() ?? string.Empty).ToList() : [],
-            ValueLogic = c.TryGetProperty("vl", out var valueLogic) ? (ValueLogic)valueLogic.GetInt32() : ValueLogic.Any
+            ValueLogic = c.TryGetProperty("vl", out var valueLogic) ? (ValueLogic)valueLogic.GetInt32() : ValueLogic.Any,
+            LeftExpression = c.TryGetProperty("le", out var leftExpression) && leftExpression.ValueKind == JsonValueKind.String
+                ? FilterExpressionParser.ParseOperand(leftExpression.GetString() ?? string.Empty) : null,
+            RightExpressions = c.TryGetProperty("re", out var rightExpressions)
+                ? rightExpressions.EnumerateArray().Select(value => FilterExpressionParser.ParseOperand(value.GetString() ?? string.Empty)).ToList() : []
         }).ToList(),
         Subgroups = group.TryGetProperty("g", out var subgroups) ? subgroups.EnumerateArray().Select(DeserializeGroup).ToList() : []
     };

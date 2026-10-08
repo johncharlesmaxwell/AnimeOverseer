@@ -1,65 +1,208 @@
+@using System.Globalization
 @using AnimeOverseer.Server.Models
+@using AnimeOverseer.Server.Services.Expressions
+@inject AnimeOverseer.Server.Services.AnimeCacheService AnimeCacheService
 
 <div class="filter-value-editor">
-    @if (UseOptionSet)
+    @if (UseOptionSet && !IsFormula(Value))
     {
         <select class="form-select condition-value" value="@Value" @onchange="ChangeValue">
             <option value="">@Placeholder</option>
-            @foreach (var option in Suggestions)
-            {
-                <option value="@option">@option</option>
-            }
-            @if (!string.IsNullOrEmpty(Value) && !Suggestions.Contains(Value))
-            {
-                <option value="@Value">@Value</option>
-            }
+            @foreach (var option in Suggestions) { <option value="@option">@option</option> }
+            @if (!string.IsNullOrEmpty(Value) && !Suggestions.Contains(Value)) { <option value="@Value">@Value</option> }
         </select>
     }
     else
     {
-        <input class="form-input condition-value" type="@(UseDatePicker ? "date" : "text")" list="@(UseDatePicker ? null : ListId)" placeholder="@Placeholder" value="@Value" @oninput="ChangeValue" />
-        @if (Suggestions.Count > 0)
+        <input class="form-input condition-value" type="@(UseDatePicker && !IsFormula(Value) ? "date" : "text")"
+               list="@(UseDatePicker || IsFormula(Value) ? null : ListId)" placeholder="@Placeholder" value="@Value" @oninput="ChangeValue" />
+        @if (Suggestions.Count > 0 && !UseDatePicker && !IsFormula(Value))
         {
-            <datalist id="@ListId">
-                @foreach (var suggestion in Suggestions)
-                {
-                    <option value="@suggestion" />
-                }
-            </datalist>
+            <datalist id="@ListId">@foreach (var suggestion in Suggestions) { <option value="@suggestion" /> }</datalist>
         }
     }
     @if (AllowDynamicExpressions)
     {
-        <button type="button" class="formulae-button" title="Build a formula" aria-label="Build a formula" @onclick="OpenDialog"><span class="formulae-icon" aria-hidden="true">{{𝑓}}</span></button>
+        <button type="button" class="formulae-button" title="Build a formula" aria-label="Build a formula" @onclick="OpenDialogAsync"><span class="formulae-icon" aria-hidden="true">{{𝑓}}</span></button>
     }
 </div>
 
 @if (isOpen)
 {
     <div class="formula-dialog-backdrop" @onclick="CloseDialog">
-        <section class="formula-dialog" role="dialog" aria-modal="true" aria-labelledby="formula-dialog-title" @onclick:stopPropagation="true">
-            <header><div><h3 id="formula-dialog-title">Build dynamic value</h3><p>Combine a field with one or more functions, then apply it to this value.</p></div><button class="condition-remove" title="Close" @onclick="CloseDialog">✕</button></header>
-            <input class="form-input formula-dialog-input" @bind="draft" @bind:event="oninput" placeholder="e.g. {{upper(replace(title, &quot; &quot;, &quot;-&quot;))}}" />
-            <div class="formula-dialog-section">
-                <strong>Anime fields</strong>
-                <div class="formula-token-list">
-                    @foreach (var field in AnimeFields)
-                    {
-                        <button type="button" @onclick="() => SetField(field.Value)">@field.Label</button>
-                    }
+        <section class="formula-dialog formula-dialog--composer" role="dialog" aria-modal="true" aria-labelledby="formula-dialog-title" @onclick:stopPropagation="true">
+            <header>
+                <div>
+                    <h3 id="formula-dialog-title">Build dynamic value</h3>
+                    <p>Start with a field or example, then add compatible operations. Every colour also has a type label and icon.</p>
                 </div>
+                <button class="condition-remove" title="Close" aria-label="Close formula builder" @onclick="CloseDialog">✕</button>
+            </header>
+
+            <div class="formula-editor-tabs" role="tablist" aria-label="Formula editing mode">
+                <button type="button" role="tab" aria-selected="@(editorMode == "guided")" class="@(editorMode == "guided" ? "active" : "")"
+                        disabled="@(editorMode != "guided" && DraftError is not null)" title="Fix source errors before returning to guided mode"
+                        @onclick="SetGuidedMode">Guided</button>
+                <button type="button" role="tab" aria-selected="@(editorMode == "code")" class="@(editorMode == "code" ? "active" : "")"
+                        @onclick="SetCodeMode">Formula code</button>
             </div>
-            <div class="formula-dialog-section">
-                <strong>Wrap with a function</strong>
-                <div class="formula-token-list">
-                    @foreach (var function in Functions)
-                    {
-                        <button type="button" @onclick="() => Wrap(function.Value)"><code>@function.Label</code></button>
-                    }
+
+            @if (editorMode == "guided")
+            {
+                <section class="formula-examples" aria-labelledby="formula-examples-title">
+                    <div class="formula-section-heading">
+                        <div><strong id="formula-examples-title">Start from an example</strong><small>Uses the same parser and validation as saved filters.</small></div>
+                    </div>
+                    <div class="formula-example-list">
+                        @foreach (var example in FilterExpressionCatalog.Examples)
+                        {
+                            <button type="button" @onclick="() => UseExample(example)">
+                                <strong>@example.Name</strong><span>@example.Description</span>
+                            </button>
+                        }
+                    </div>
+                </section>
+
+                <div class="formula-composer-grid">
+                    <aside class="formula-catalog" aria-label="Formula fields and functions">
+                        <label class="sr-only" for="@SearchId">Search fields and functions</label>
+                        <input id="@SearchId" class="form-input" type="search" placeholder="Search fields and functions…"
+                               @bind="catalogSearch" @bind:event="oninput" />
+
+                        <div class="formula-dialog-section">
+                            <strong>Anime fields</strong>
+                            <div class="formula-token-list formula-token-list--vertical">
+                                @foreach (var field in FilteredFields)
+                                {
+                                    <button type="button" class="expression-palette-item @FilterExpressionCatalog.TypeCssClass(field.Type)"
+                                            draggable="true" @ondragstart="() => BeginDragField(field.Name)" @onclick="() => SetField(field.Name)"
+                                            title="@field.Description">
+                                        <span class="expression-node-icon" aria-hidden="true">@FilterExpressionCatalog.TypeIcon(field.Type)</span>
+                                        <span><strong>@field.Label</strong><small>@field.Description</small></span>
+                                        <em>@FilterExpressionCatalog.TypeLabel(field.Type)</em>
+                                    </button>
+                                }
+                            </div>
+                        </div>
+
+                        @foreach (var group in FilteredFunctions.GroupBy(function => function.Category))
+                        {
+                            <div class="formula-dialog-section">
+                                <strong>@group.Key</strong>
+                                <div class="formula-token-list formula-token-list--vertical">
+                                    @foreach (var function in group)
+                                    {
+                                        var canApply = CanApply(function);
+                                        <button type="button" class="expression-palette-item @FunctionTypeClass(function)" disabled="@(!canApply)"
+                                                draggable="@canApply" @ondragstart="() => BeginDragFunction(function.Name)" @onclick="() => ApplyFunction(function)"
+                                                title="@(canApply ? function.Description : $"{function.Description}. It is not compatible with the current output type.")">
+                                            <span class="expression-node-icon" aria-hidden="true">𝑓</span>
+                                            <span><strong>@function.Label</strong><small>@function.Description</small></span>
+                                        </button>
+                                    }
+                                </div>
+                            </div>
+                        }
+                    </aside>
+
+                    <main class="formula-workspace">
+                        <div class="formula-section-heading">
+                            <div><strong>Your formula</strong><small>Click an item to insert it, or drag it onto this canvas.</small></div>
+                            <button type="button" class="btn btn-small" disabled="@(undoDrafts.Count == 0)" @onclick="Undo">Undo</button>
+                        </div>
+                        <div class="expression-canvas @(draggedKind is null ? "" : "expression-canvas--drop-ready")"
+                             @ondragover:preventDefault @ondrop="DropOnCanvas">
+                            @if (CurrentNode is ExpressionNode root)
+                            {
+                                <ExpressionNodeView Node="root" />
+                            }
+                            else
+                            {
+                                <p>Choose a field or example to begin.</p>
+                            }
+                        </div>
+                        <div class="formula-source-summary">
+                            <span>Generated formula</span><code>@InnerExpression()</code>
+                        </div>
+                        @if (CurrentType is ExpressionValueType outputType)
+                        {
+                            <span class="expression-output-type @FilterExpressionCatalog.TypeCssClass(outputType)">
+                                <span aria-hidden="true">@FilterExpressionCatalog.TypeIcon(outputType)</span> Returns @FilterExpressionCatalog.TypeLabel(outputType).ToLowerInvariant()
+                            </span>
+                        }
+                    </main>
+
+                    <aside class="formula-preview" aria-live="polite">
+                        <div class="formula-section-heading"><div><strong>Live preview</strong><small>Evaluated locally against catalogue data.</small></div></div>
+                        @if (previewLoading)
+                        {
+                            <p class="formula-preview-muted">Loading examples…</p>
+                        }
+                        else if (previewAnimes.Count == 0)
+                        {
+                            <p class="formula-preview-muted">No catalogue anime are available for a preview yet.</p>
+                        }
+                        else
+                        {
+                            <label for="@PreviewId">Example anime</label>
+                            <select id="@PreviewId" class="form-select" value="@previewAnimeId" @onchange="ChangePreviewAnime">
+                                @foreach (var anime in previewAnimes) { <option value="@anime.Id">@anime.Title</option> }
+                            </select>
+
+                            var preview = BuildPreview();
+                            <div class="formula-preview-result @(preview.Success ? "formula-preview-result--valid" : "formula-preview-result--error")">
+                                <span>@(preview.Success ? "Result" : "Preview")</span>
+                                <strong>@preview.Text</strong>
+                                @if (preview.Type is ExpressionValueType previewType)
+                                {
+                                    <small>@FilterExpressionCatalog.TypeLabel(previewType)</small>
+                                }
+                            </div>
+
+                            @if (ReferencedFields.Count > 0)
+                            {
+                                <dl class="formula-preview-inputs">
+                                    @foreach (var field in ReferencedFields)
+                                    {
+                                        <div><dt>@field.Label</dt><dd>@PreviewFieldValue(field)</dd></div>
+                                    }
+                                </dl>
+                            }
+                            @if (ReferencedFields.Any(field => field.Name.Equals("inLibrary", StringComparison.OrdinalIgnoreCase)))
+                            {
+                                <small class="formula-preview-muted">Library status is shown as “No” in formula previews.</small>
+                            }
+                        }
+                    </aside>
                 </div>
-                <small>Each click wraps the current formula, so functions can be composed.</small>
-            </div>
-            <footer><button class="btn" @onclick="CloseDialog">Cancel</button><button class="btn btn-primary" @onclick="Apply">Use value</button></footer>
+            }
+            else
+            {
+                <div class="formula-code-editor">
+                    <label for="@CodeId"><strong>Formula source</strong></label>
+                    <textarea id="@CodeId" class="form-input formula-dialog-input @(DraftError is null ? "" : "input-error")" rows="8"
+                              value="@draft" @oninput="ChangeDraft" spellcheck="false"
+                              placeholder="e.g. {{div(mul(episodes, duration), 60)}}"></textarea>
+                    @if (DraftError is not null)
+                    {
+                        <div class="expression-code-error" role="alert"><strong>Fix this before applying:</strong> @DraftError</div>
+                    }
+                    else if (CurrentType is ExpressionValueType sourceType)
+                    {
+                        <div class="expression-code-valid @FilterExpressionCatalog.TypeCssClass(sourceType)">
+                            <span aria-hidden="true">@FilterExpressionCatalog.TypeIcon(sourceType)</span>
+                            Valid formula · returns @FilterExpressionCatalog.TypeLabel(sourceType).ToLowerInvariant()
+                        </div>
+                    }
+                    <p>Fields are unquoted; text is quoted. Functions can be nested up to @FilterExpressionParser.MaximumDepth levels.</p>
+                </div>
+            }
+
+            <footer>
+                <span class="formula-dialog-status">@(DraftError is null ? "Ready to use" : "Formula needs attention")</span>
+                <button class="btn" @onclick="CloseDialog">Cancel</button>
+                <button class="btn btn-primary" disabled="@(DraftError is not null)" @onclick="ApplyAsync">Use value</button>
+            </footer>
         </section>
     </div>
 }
@@ -74,34 +217,184 @@
     [Parameter] public List<string> Suggestions { get; set; } = [];
 
     private readonly string ListId = $"filter-values-{Guid.NewGuid():N}";
+    private readonly string SearchId = $"formula-search-{Guid.NewGuid():N}";
+    private readonly string PreviewId = $"formula-preview-{Guid.NewGuid():N}";
+    private readonly string CodeId = $"formula-code-{Guid.NewGuid():N}";
+    private readonly Stack<string> undoDrafts = new();
+    private readonly List<Anime> previewAnimes = [];
     private bool isOpen;
+    private bool previewLoading;
+    private string editorMode = "guided";
     private string draft = string.Empty;
-    private async Task ChangeValue(ChangeEventArgs e) => await ValueChanged.InvokeAsync(e.Value?.ToString() ?? string.Empty);
-    private void OpenDialog() { draft = Value; isOpen = true; }
+    private string catalogSearch = string.Empty;
+    private string? draggedKind;
+    private string? draggedValue;
+    private int previewAnimeId;
+
+    private string? DraftError
+    {
+        get
+        {
+            if (!IsFormula(draft)) return "A formula must be wrapped in {{ and }}.";
+            var result = FilterExpressionParser.Parse(draft);
+            if (!result.IsValid) return result.Diagnostics.FirstOrDefault()?.Message ?? "Invalid expression.";
+            return FilterExpressionValidator.Validate(result.Root!).FirstOrDefault()?.Message;
+        }
+    }
+
+    private ExpressionNode? CurrentNode
+    {
+        get
+        {
+            if (DraftError is not null) return null;
+            return FilterExpressionParser.Parse(draft).Root;
+        }
+    }
+
+    private ExpressionValueType? CurrentType => CurrentNode is ExpressionNode node ? FilterExpressionValidator.InferType(node) : null;
+    private Anime? SelectedPreviewAnime => previewAnimes.FirstOrDefault(anime => anime.Id == previewAnimeId) ?? previewAnimes.FirstOrDefault();
+
+    private IReadOnlyList<ExpressionFieldDefinition> ReferencedFields => CurrentNode is null
+        ? []
+        : FindFieldNames(CurrentNode).Distinct(StringComparer.OrdinalIgnoreCase)
+            .Select(name => FilterExpressionCatalog.TryGetField(name, out var definition) ? definition : null)
+            .Where(definition => definition is not null).Cast<ExpressionFieldDefinition>().ToList();
+
+    private IEnumerable<ExpressionFieldDefinition> FilteredFields => FilterExpressionCatalog.Fields.Where(definition => MatchesSearch(definition.Name, definition.Label, definition.Description));
+    private IEnumerable<ExpressionFunctionDefinition> FilteredFunctions => FilterExpressionCatalog.Functions
+        .Where(function => !function.Name.Equals("array", StringComparison.OrdinalIgnoreCase))
+        .Where(function => MatchesSearch(function.Name, function.Label, function.Description, function.Category));
+
+    private static bool IsFormula(string value) => value.TrimStart().StartsWith("{{", StringComparison.Ordinal);
+    private async Task ChangeValue(ChangeEventArgs args) => await ValueChanged.InvokeAsync(args.Value?.ToString() ?? string.Empty);
+    private void SetGuidedMode() => editorMode = "guided";
+    private void SetCodeMode() => editorMode = "code";
+
+    private async Task OpenDialogAsync()
+    {
+        draft = IsFormula(Value) ? Value : string.IsNullOrWhiteSpace(Value) ? "{{title}}" : $"{{{{\"{Escape(Value)}\"}}}}";
+        editorMode = DraftError is null ? "guided" : "code";
+        catalogSearch = string.Empty;
+        undoDrafts.Clear();
+        isOpen = true;
+        previewLoading = true;
+        await InvokeAsync(StateHasChanged);
+        try
+        {
+            previewAnimes.Clear();
+            previewAnimes.AddRange(await AnimeCacheService.GetExpressionPreviewSamplesAsync());
+            previewAnimeId = previewAnimes.FirstOrDefault()?.Id ?? 0;
+        }
+        finally
+        {
+            previewLoading = false;
+        }
+    }
+
     private void CloseDialog() => isOpen = false;
-    private async Task Apply() { await ValueChanged.InvokeAsync(draft); isOpen = false; }
-    private void SetField(string value) => draft = $"{{{{{value}}}}}";
-    private void Wrap(string function)
+
+    private async Task ApplyAsync()
+    {
+        if (DraftError is null)
+        {
+            await ValueChanged.InvokeAsync(draft);
+            isOpen = false;
+        }
+    }
+
+    private void ChangeDraft(ChangeEventArgs args) => draft = args.Value?.ToString() ?? string.Empty;
+
+    private void SetField(string value) => SetDraft($"{{{{{value}}}}}");
+    private void UseExample(ExpressionExampleDefinition example) => SetDraft($"{{{{{example.Source}}}}}");
+
+    private void ApplyFunction(ExpressionFunctionDefinition function)
+    {
+        if (!CanApply(function)) return;
+        SetDraft($"{{{{{function.ApplyTo(InnerExpression())}}}}}");
+    }
+
+    private bool CanApply(ExpressionFunctionDefinition function) =>
+        !function.UsesCurrentValue || DraftError is null && function.CanApplyTo(CurrentType);
+
+    private string FunctionTypeClass(ExpressionFunctionDefinition function)
+    {
+        if (!CanApply(function)) return "expression-type--empty";
+        var parsed = FilterExpressionParser.Parse(function.ApplyTo(InnerExpression()));
+        var type = parsed.IsValid ? FilterExpressionValidator.InferType(parsed.Root!) : null;
+        return FilterExpressionCatalog.TypeCssClass(type);
+    }
+
+    private void SetDraft(string value)
+    {
+        if (value == draft) return;
+        undoDrafts.Push(draft);
+        draft = value;
+    }
+
+    private void Undo()
+    {
+        if (undoDrafts.TryPop(out var previous)) draft = previous;
+    }
+
+    private void BeginDragField(string name) { draggedKind = "field"; draggedValue = name; }
+    private void BeginDragFunction(string name) { draggedKind = "function"; draggedValue = name; }
+
+    private void DropOnCanvas()
+    {
+        if (draggedKind == "field" && draggedValue is string fieldName) SetField(fieldName);
+        else if (draggedKind == "function" && draggedValue is string functionName && FilterExpressionCatalog.TryGetFunction(functionName, out var function)) ApplyFunction(function);
+        draggedKind = draggedValue = null;
+    }
+
+    private string InnerExpression()
     {
         var inner = draft.Trim();
-        if (inner.StartsWith("{{") && inner.EndsWith("}}") && inner.Length >= 4) inner = inner[2..^2];
-        else inner = $"\"{inner.Replace("\\", "\\\\").Replace("\"", "\\\"")}\"";
-        var expression = function switch
-        {
-            "replace" => $"replace({inner}, \"\", \"\")",
-            "concat" => $"concat({inner}, \"\")",
-            "substring" => $"substring({inner}, 0, 1)",
-            _ => $"{function}({inner})"
-        };
-        draft = $"{{{{{expression}}}}}";
+        if (inner.StartsWith("{{") && inner.EndsWith("}}") && inner.Length >= 4) return inner[2..^2].Trim();
+        return string.IsNullOrWhiteSpace(inner) ? "title" : $"\"{Escape(inner)}\"";
     }
-    private static readonly (string Value, string Label)[] AnimeFields =
-    [
-        ("title", "Title"), ("originalTitle", "Original title"), ("synopsis", "Synopsis"), ("type", "Type"), ("status", "Status"),
-        ("season", "Season"), ("year", "Year"), ("episodes", "Episodes"), ("duration", "Duration"), ("rating", "Rating"),
-        ("malId", "MAL ID"), ("aniListId", "AniList ID"), ("kitsuId", "Kitsu ID"), ("startDate", "Start date"), ("endDate", "End date"),
-        ("cachedAt", "Cached at"), ("createdAt", "Created at"), ("modifiedAt", "Modified at"), ("genres", "Genres"), ("themes", "Themes"), ("demographics", "Demographics")
-    ];
-    private static readonly (string Value, string Label)[] Functions =
-    [ ("lower", "lower"), ("upper", "upper"), ("trim", "trim"), ("replace", "replace"), ("concat", "concat"), ("substring", "substring") ];
+
+    private bool MatchesSearch(params string[] values) => string.IsNullOrWhiteSpace(catalogSearch) ||
+        values.Any(value => value.Contains(catalogSearch.Trim(), StringComparison.OrdinalIgnoreCase));
+
+    private void ChangePreviewAnime(ChangeEventArgs args)
+    {
+        if (int.TryParse(args.Value?.ToString(), out var id)) previewAnimeId = id;
+    }
+
+    private PreviewResult BuildPreview()
+    {
+        if (DraftError is string error) return new(false, error, null);
+        if (CurrentNode is not ExpressionNode node || SelectedPreviewAnime is not Anime anime) return new(false, "No sample is available.", null);
+        if (!FilterExpressionEvaluator.TryEvaluate(node, anime, ExpressionEvaluationContext.Create(), out var value))
+            return new(false, "No result for this anime. Try another sample with populated fields.", CurrentType);
+        return new(true, FormatValue(value), value.Type);
+    }
+
+    private string PreviewFieldValue(ExpressionFieldDefinition field)
+    {
+        if (SelectedPreviewAnime is not Anime anime) return "—";
+        var value = FilterExpressionEvaluator.Evaluate(new FieldExpression { Name = field.Name }, anime, ExpressionEvaluationContext.Create());
+        return FormatValue(value);
+    }
+
+    private static IEnumerable<string> FindFieldNames(ExpressionNode node) => node switch
+    {
+        FieldExpression field => [field.Name],
+        FunctionExpression function => function.Arguments.SelectMany(FindFieldNames),
+        _ => []
+    };
+
+    private static string FormatValue(ExpressionValue value) => value switch
+    {
+        { IsNull: true } => "No value",
+        { Type: ExpressionValueType.Boolean, Value: bool boolean } => boolean ? "Yes" : "No",
+        { Type: ExpressionValueType.Number, Value: decimal number } => number.ToString("0.##", CultureInfo.InvariantCulture),
+        { Type: ExpressionValueType.DateTime, Value: DateTime date } => date.ToString("d MMM yyyy", CultureInfo.InvariantCulture),
+        { Type: ExpressionValueType.StringCollection, Value: IEnumerable<string> values } => values.Any() ? string.Join(", ", values) : "Empty list",
+        _ => value.Value?.ToString() ?? "No value"
+    };
+
+    private static string Escape(string value) => value.Replace("\\", "\\\\").Replace("\"", "\\\"");
+
+    private sealed record PreviewResult(bool Success, string Text, ExpressionValueType? Type);
 }

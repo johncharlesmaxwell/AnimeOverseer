@@ -2,6 +2,7 @@ using AnimeOverseer.Server.Models;
 using System.Globalization;
 using System.Text;
 using System.Text.RegularExpressions;
+using AnimeOverseer.Server.Services.Expressions;
 
 namespace AnimeOverseer.Server.Services;
 
@@ -19,6 +20,7 @@ public static partial class CollectionFilterExpressionResolver
         var date = (now ?? DateTime.UtcNow).Date;
         return new FilterState
         {
+            SchemaVersion = source.SchemaVersion,
             TopLevelLogic = source.TopLevelLogic,
             Groups = source.Groups.Select(group => ResolveGroup(group, date, anime)).ToList()
         };
@@ -33,14 +35,21 @@ public static partial class CollectionFilterExpressionResolver
             Id = condition.Id, Field = condition.Field, Operator = condition.Operator,
             Value = ResolveValue(condition.Field, condition.Value, date, anime),
             Values = condition.Values.Select(value => ResolveValue(condition.Field, value, date, anime)).ToList(),
-            ValueLogic = condition.ValueLogic
+            ValueLogic = condition.ValueLogic,
+            LeftExpression = condition.LeftExpression,
+            RightExpressions = condition.RightExpressions
         }).ToList(),
         Subgroups = group.Subgroups.Select(subgroup => ResolveGroup(subgroup, date, anime)).ToList()
     };
 
-    public static bool RequiresAnimeContext(FilterState state) => state.Groups
-        .SelectMany(AllConditions)
-        .Any(condition => IsStringField(condition.Field) && condition.EffectiveValues.Any(value => value.Contains("{{", StringComparison.Ordinal)));
+    public static bool RequiresAnimeContext(FilterState state)
+    {
+        var conditions = state.Groups.SelectMany(AllConditions).ToList();
+        if (conditions.Any(condition => condition.EffectiveValues.Any(value =>
+                value.Contains("{{", StringComparison.Ordinal) && !value.TrimStart().StartsWith("{{", StringComparison.Ordinal))))
+            return true;
+        return conditions.Any(FilterExpressionQueryTranslator.UsesExpressions) && !FilterExpressionQueryTranslator.CanTranslate(state);
+    }
 
     private static IEnumerable<FilterCondition> AllConditions(FilterGroup group) =>
         group.Conditions.Concat(group.Subgroups.SelectMany(AllConditions));
@@ -100,7 +109,7 @@ public static partial class CollectionFilterExpressionResolver
 
     private static bool IsStringField(FilterField field) => field is
         FilterField.Title or FilterField.OriginalTitle or FilterField.Synopsis or FilterField.Type or FilterField.Status or
-        FilterField.Season or FilterField.Genres or FilterField.Themes or FilterField.Demographics;
+        FilterField.Season or FilterField.Genres or FilterField.Themes or FilterField.Demographics or FilterField.TitleAliases;
 
     /// <summary>Resolves explicit {{function(...)}} fragments without changing ordinary filter text.</summary>
     private static string ResolveStringTemplates(string value, Anime? anime)
@@ -116,7 +125,8 @@ public static partial class CollectionFilterExpressionResolver
             if (end < 0) return result.Append(value, start, value.Length - start).ToString();
 
             var source = value[(start + 2)..end];
-            result.Append(TryEvaluateStringExpression(source, anime, out var resolved) ? resolved : value[start..(end + 2)]);
+            result.Append(TryEvaluateStringExpression(source, anime, out var resolved) || TryEvaluateTypedExpression(source, anime, out resolved)
+                ? resolved : value[start..(end + 2)]);
             position = end + 2;
         }
         return result.ToString();
@@ -147,6 +157,17 @@ public static partial class CollectionFilterExpressionResolver
                 result = values[0].Substring(start, length); return true;
             default: return false;
         }
+    }
+
+    private static bool TryEvaluateTypedExpression(string source, Anime? anime, out string result)
+    {
+        result = string.Empty;
+        if (anime is null) return false;
+        var parsed = FilterExpressionParser.Parse(source);
+        if (!parsed.IsValid || FilterExpressionValidator.Validate(parsed.Root!).Count > 0 ||
+            !FilterExpressionEvaluator.TryEvaluate(parsed.Root!, anime, ExpressionEvaluationContext.Create(), out var value)) return false;
+        result = FilterExpressionEvaluator.AsString(value);
+        return true;
     }
 
     private static List<string>? SplitArguments(string source)

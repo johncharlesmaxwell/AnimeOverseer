@@ -1,6 +1,7 @@
 using System.Linq.Expressions;
 using System.Reflection;
 using AnimeOverseer.Server.Models;
+using AnimeOverseer.Server.Services.Expressions;
 
 namespace AnimeOverseer.Server.Services;
 
@@ -15,9 +16,10 @@ public static class FilterQueryBuilder
         if (activeGroups.Count == 0) return query;
 
         var param = Expression.Parameter(typeof(Anime), "a");
+        var utcNow = DateTime.UtcNow;
 
         var groupExprs = activeGroups
-            .Select(g => BuildGroup(g, param))
+            .Select(g => BuildGroup(g, param, utcNow))
             .OfType<Expression>()
             .ToList();
 
@@ -32,12 +34,12 @@ public static class FilterQueryBuilder
         return query.Where(Expression.Lambda<Func<Anime, bool>>(body, param));
     }
 
-    private static Expression? BuildGroup(FilterGroup group, ParameterExpression param)
+    private static Expression? BuildGroup(FilterGroup group, ParameterExpression param, DateTime utcNow)
     {
         var exprs = group.Conditions
             .Where(FilterState.IsActiveCondition)
-            .Select(c => BuildCondition(c, param))
-            .Concat(group.Subgroups.Where(FilterState.IsActiveGroup).Select(g => BuildGroup(g, param)))
+            .Select(c => BuildCondition(c, param, utcNow))
+            .Concat(group.Subgroups.Where(FilterState.IsActiveGroup).Select(g => BuildGroup(g, param, utcNow)))
             .OfType<Expression>()
             .ToList();
 
@@ -50,9 +52,13 @@ public static class FilterQueryBuilder
                 : Expression.OrElse);
     }
 
-    private static Expression? BuildCondition(FilterCondition c, ParameterExpression param)
+    private static Expression? BuildCondition(FilterCondition c, ParameterExpression param, DateTime utcNow)
     {
         if (!FilterState.IsActiveCondition(c)) return null;
+
+        if (FilterExpressionQueryTranslator.UsesExpressions(c))
+            return FilterExpressionQueryTranslator.TryBuildCondition(c, param, utcNow, out var translated)
+                ? translated : Expression.Constant(false);
 
         if (c.Operator is FilterOperator.ContainsData or FilterOperator.DoesNotContainData)
             return BuildConditionValue(c, c.Value.Trim(), param);
@@ -90,6 +96,11 @@ public static class FilterQueryBuilder
             FilterField.CreatedAt    => DateExpr(Expression.Property(param, "CreatedAt"), c.Operator, val),
             FilterField.ModifiedAt   => DateExpr(Expression.Property(param, "ModifiedAt"), c.Operator, val),
             FilterField.InLibrary    => null,
+            FilterField.TitleAliases => TagExpr(param, "TitleAliases", null, c.Operator, val),
+            FilterField.ImageCount   => IntExpr(CollectionCount(Expression.Property(param, "Images")), c.Operator, val),
+            FilterField.HasLocalImage => BoolExpr(HasLocalImageExpr(param), c.Operator, val),
+            FilterField.HasEnglishTitle => BoolExpr(Expression.Property(param, "HasEnglishTitle"), c.Operator, val),
+            FilterField.NamesReviewed => BoolExpr(Expression.Property(param, "NamesReviewed"), c.Operator, val),
             FilterField.Genres       => TagExpr(param, "AnimeGenres", "Genre", c.Operator, val),
             FilterField.Themes       => TagExpr(param, "AnimeThemes", "Theme", c.Operator, val),
             FilterField.Demographics => TagExpr(param, "AnimeDemographics", "Demographic", c.Operator, val),
@@ -177,6 +188,32 @@ public static class FilterQueryBuilder
         return NumericCmp(Expression.Property(prop, nameof(DateTime.Date)), op, Expression.Constant(target.Date));
     }
 
+    private static Expression BoolExpr(Expression prop, FilterOperator op, string val)
+    {
+        var target = val.Equals("yes", StringComparison.OrdinalIgnoreCase) || bool.TryParse(val, out var parsed) && parsed;
+        return op switch { FilterOperator.Equals => Expression.Equal(prop, Expression.Constant(target)), FilterOperator.NotEquals => Expression.NotEqual(prop, Expression.Constant(target)), _ => Expression.Constant(false) };
+    }
+
+    private static Expression HasLocalImageExpr(ParameterExpression param)
+    {
+        var path = Expression.Property(param, "LocalImagePath");
+        var direct = Expression.AndAlso(Expression.NotEqual(path, Expression.Constant(null, typeof(string))), Expression.NotEqual(path, Expression.Constant(string.Empty)));
+        var images = Expression.Property(param, "Images");
+        var itemType = images.Type.GetGenericArguments()[0];
+        var image = Expression.Parameter(itemType, "image");
+        var imagePath = Expression.Property(image, "LocalImagePath");
+        var predicate = Expression.AndAlso(Expression.NotEqual(imagePath, Expression.Constant(null, typeof(string))), Expression.NotEqual(imagePath, Expression.Constant(string.Empty)));
+        var any = typeof(Enumerable).GetMethods(BindingFlags.Static | BindingFlags.Public).First(method => method.Name == "Any" && method.GetParameters().Length == 2).MakeGenericMethod(itemType);
+        return Expression.OrElse(direct, Expression.Call(any, images, Expression.Lambda(predicate, image)));
+    }
+
+    private static Expression CollectionCount(Expression collection)
+    {
+        var itemType = collection.Type.GetGenericArguments()[0];
+        var count = typeof(Enumerable).GetMethods(BindingFlags.Static | BindingFlags.Public).First(method => method.Name == "Count" && method.GetParameters().Length == 1).MakeGenericMethod(itemType);
+        return Expression.Call(count, collection);
+    }
+
     private static Expression NumericCmp(Expression field, FilterOperator op, Expression target) => op switch
     {
         FilterOperator.Equals             => Expression.Equal(field, target),
@@ -189,13 +226,13 @@ public static class FilterQueryBuilder
     };
 
     private static Expression TagExpr(
-        ParameterExpression param, string collectionProp, string tagNavProp,
+        ParameterExpression param, string collectionProp, string? tagNavProp,
         FilterOperator op, string val)
     {
         var collection = Expression.Property(param, collectionProp);
         var itemType   = collection.Type.GetGenericArguments()[0];
         var itemParam  = Expression.Parameter(itemType, "x");
-        var nameProp   = Expression.Property(Expression.Property(itemParam, tagNavProp), "Name");
+        var nameProp   = tagNavProp is null ? Expression.Property(itemParam, "Title") : Expression.Property(Expression.Property(itemParam, tagNavProp), "Name");
         var v          = Expression.Constant(val);
 
         var anyMethod = typeof(Enumerable)

@@ -2,6 +2,7 @@ namespace AnimeOverseer.Server.Models;
 
 public class FilterState
 {
+    public int SchemaVersion { get; set; } = 1;
     public GroupLogic TopLevelLogic { get; set; } = GroupLogic.And;
     public List<FilterGroup> Groups { get; set; } = [new FilterGroup()];
 
@@ -16,6 +17,7 @@ public class FilterState
 
     public static bool IsActiveCondition(FilterCondition condition) =>
         condition.Operator is FilterOperator.ContainsData or FilterOperator.DoesNotContainData ||
+        condition.RightExpressions.Any(expression => !string.IsNullOrWhiteSpace(expression.Source)) ||
         condition.EffectiveValues.Any(value => !string.IsNullOrWhiteSpace(value));
 }
 
@@ -37,6 +39,11 @@ public class FilterCondition
     // New filters keep each entry independently so values can contain formulae too.
     public List<string> Values { get; set; } = [];
     public ValueLogic ValueLogic { get; set; } = ValueLogic.Any;
+
+    // Version 2 operands. Null/empty values are adapted from Field/Value/Values,
+    // which remain readable for existing saved collections and dashboard URLs.
+    public FilterExpression? LeftExpression { get; set; }
+    public List<FilterExpression> RightExpressions { get; set; } = [];
 
     public IEnumerable<string> EffectiveValues => Values.Count > 0 ? Values : [Value];
 }
@@ -67,7 +74,12 @@ public enum FilterField
     CachedAt,
     CreatedAt,
     ModifiedAt,
-    InLibrary
+    InLibrary,
+    TitleAliases,
+    ImageCount,
+    HasLocalImage,
+    HasEnglishTitle,
+    NamesReviewed
 }
 
 public enum FilterOperator

@@ -3,6 +3,7 @@
 @rendermode InteractiveServer
 @using AnimeOverseer.Server.Models
 @using AnimeOverseer.Server.Services
+@using AnimeOverseer.Server.Services.Expressions
 @inject CollectionService CollectionService
 @inject IAnimeDataSource AnimeDataSource
 @inject NavigationManager Navigation
@@ -44,9 +45,10 @@
                 </div>
                 @if (editType == CollectionType.Automatic)
                 {
-                    <div class="saved-filter"><h3>Collection filters</h3><p class="collection-expression-help">Add several values to a condition and choose whether it matches <em>any</em> or <em>all</em> of them. The <strong>{{ &#x1D453; }}</strong> button opens a formula builder for dynamic dates, fields, and composable string functions.</p><FilterBuilder State="editFilters" OnChanged="FiltersChanged" AvailableGenres="genres" AvailableThemes="themes" AvailableDemographics="demographics" AllowDynamicExpressions="true" /></div>
+                    <div class="saved-filter"><h3>Collection filters</h3><p class="collection-expression-help">Add several values to a condition and choose whether it matches <em>any</em> or <em>all</em>. Use <strong>{{ &#x1D453; }}</strong> beside a field for a calculated operand, or beside a value for nested text, collection, math, and date functions.</p><FilterBuilder State="editFilters" OnChanged="FiltersChanged" AvailableGenres="genres" AvailableThemes="themes" AvailableDemographics="demographics" AllowDynamicExpressions="true" /></div>
+                    @if (expressionErrors.Count > 0) { <div class="expression-validation-summary" role="alert"><strong>Fix the filter expressions before saving:</strong><ul>@foreach (var error in expressionErrors) { <li>@error</li> }</ul></div> }
                 }
-                <div class="collection-editor-actions"><button class="btn btn-primary" @onclick="SaveAsync" disabled="@string.IsNullOrWhiteSpace(editName)">Save collection</button><button class="btn" @onclick="CancelEdit">Cancel</button></div>
+                <div class="collection-editor-actions"><button class="btn btn-primary" @onclick="SaveAsync" disabled="@(string.IsNullOrWhiteSpace(editName) || editType == CollectionType.Automatic && expressionErrors.Count > 0)">Save collection</button><button class="btn" @onclick="CancelEdit">Cancel</button></div>
             </div>
         }
         else if (selected is not null)
@@ -130,6 +132,7 @@
     private CollectionType editType = CollectionType.Manual;
     private FilterState editFilters = new();
     private FilterState manualFilters = new();
+    private IReadOnlyList<string> expressionErrors = [];
 
     protected override async Task OnInitializedAsync()
     {
@@ -176,13 +179,15 @@
         currentPage = 1;
         await LoadPageAsync();
     }
-    private void NewCollection() { selected = null; editing = true; editName = editDescription = string.Empty; editType = CollectionType.Manual; editFilters = new(); }
-    private void EditSelected() { if (selected is null) return; editing = true; editName = selected.Name; editDescription = selected.Description ?? string.Empty; editType = selected.Type; editFilters = CollectionService.Deserialize(selected.FilterJson); }
+    private void NewCollection() { selected = null; editing = true; editName = editDescription = string.Empty; editType = CollectionType.Manual; editFilters = new(); expressionErrors = []; }
+    private void EditSelected() { if (selected is null) return; editing = true; editName = selected.Name; editDescription = selected.Description ?? string.Empty; editType = selected.Type; editFilters = CollectionService.Deserialize(selected.FilterJson); ValidateExpressions(); }
     private void CancelEdit() { editing = false; if (selected is null) Navigation.NavigateTo("/collections"); }
-    private void FiltersChanged() => StateHasChanged();
+    private void FiltersChanged() { ValidateExpressions(); StateHasChanged(); }
+    private void ValidateExpressions() => expressionErrors = editType == CollectionType.Automatic ? FilterExpressionValidator.Validate(editFilters) : [];
     private async Task SaveAsync()
     {
-        if (string.IsNullOrWhiteSpace(editName)) return;
+        ValidateExpressions();
+        if (string.IsNullOrWhiteSpace(editName) || expressionErrors.Count > 0) return;
         if (selected is null) { var created = await CollectionService.CreateAsync(editName, editDescription, editType, editFilters); editing = false; collections = await CollectionService.GetAllAsync(); Navigation.NavigateTo($"/collections/{created.Id}"); }
         else { await CollectionService.UpdateAsync(selected.Id, editName, editDescription, editType, editFilters); editing = false; await RefreshSelectedAsync(); }
     }

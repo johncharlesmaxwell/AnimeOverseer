@@ -2,13 +2,14 @@ using AnimeOverseer.Server.Data;
 using AnimeOverseer.Server.Models;
 using Microsoft.EntityFrameworkCore;
 using System.Text.Json;
+using AnimeOverseer.Server.Services.Expressions;
 
 namespace AnimeOverseer.Server.Services;
 
 public class CollectionService(AnimeDbContext db)
 {
     private IQueryable<Anime> Animes() => db.Animes.AsNoTracking()
-        .Include(a => a.Season).Include(a => a.Images)
+        .Include(a => a.Season).Include(a => a.Images).Include(a => a.TitleAliases)
         .Include(a => a.AnimeGenres).ThenInclude(link => link.Genre)
         .Include(a => a.AnimeThemes).ThenInclude(link => link.Theme)
         .Include(a => a.AnimeDemographics).ThenInclude(link => link.Demographic);
@@ -27,7 +28,9 @@ public class CollectionService(AnimeDbContext db)
 
     public async Task<AnimeCollection> CreateAsync(string name, string? description, CollectionType type, FilterState? filters)
     {
-        var collection = new AnimeCollection { Name = name.Trim(), Description = description?.Trim(), Type = type, FilterJson = type == CollectionType.Automatic ? JsonSerializer.Serialize(filters ?? new FilterState()) : null };
+        filters ??= new FilterState();
+        if (type == CollectionType.Automatic) ValidateAndVersion(filters);
+        var collection = new AnimeCollection { Name = name.Trim(), Description = description?.Trim(), Type = type, FilterJson = type == CollectionType.Automatic ? JsonSerializer.Serialize(filters) : null };
         db.AnimeCollections.Add(collection);
         await db.SaveChangesAsync();
         return collection;
@@ -37,8 +40,10 @@ public class CollectionService(AnimeDbContext db)
     {
         var collection = await db.AnimeCollections.FindAsync(id);
         if (collection is null) return false;
+        filters ??= new FilterState();
+        if (type == CollectionType.Automatic) ValidateAndVersion(filters);
         collection.Name = name.Trim(); collection.Description = description?.Trim(); collection.Type = type;
-        collection.FilterJson = type == CollectionType.Automatic ? JsonSerializer.Serialize(filters ?? new FilterState()) : null;
+        collection.FilterJson = type == CollectionType.Automatic ? JsonSerializer.Serialize(filters) : null;
         collection.UpdatedAt = DateTime.UtcNow;
         await db.SaveChangesAsync();
         return true;
@@ -163,5 +168,12 @@ public class CollectionService(AnimeDbContext db)
     {
         try { return string.IsNullOrWhiteSpace(json) ? new FilterState() : JsonSerializer.Deserialize<FilterState>(json) ?? new FilterState(); }
         catch { return new FilterState(); }
+    }
+
+    private static void ValidateAndVersion(FilterState filters)
+    {
+        var errors = FilterExpressionValidator.Validate(filters);
+        if (errors.Count > 0) throw new ArgumentException(errors[0], nameof(filters));
+        filters.SchemaVersion = 2;
     }
 }

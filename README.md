@@ -111,6 +111,29 @@ For Sonarr and Radarr, you can also select default quality profiles, root folder
 
 Settings and integration credentials are stored in the SQLite database. Treat the database and its backups as sensitive data.
 
+## Filter expressions
+
+Filters and automatic collections support calculated operands. Select the formula button beside a field or value, then combine anime fields with nested functions. For example:
+
+```text
+length(genres) >= 3
+div(mul(episodes, duration), 60) < 10
+length(intersection(genres, createArray("Action", "Adventure"))) >= 2
+dateDifference(startDate, endDate) > 90
+```
+
+Available expression fields include catalogue text, type, status, season, year, episodes, duration, rating, provider IDs, dates, genres, themes, demographics, title aliases, image count, image availability, title-review flags, and library status.
+
+Supported function groups include:
+
+- Text: `toLower`, `toUpper`, `trim`, `concat`, `replace`, `substring`, `slice`, `indexOf`, `lastIndexOf`, `startsWith`, `endsWith`, and `length`.
+- Null and conditional: `empty`, `coalesce`, `if`, comparisons, `and`, `or`, and `not`.
+- Conversion and math: `string`, `int`, `float`, `decimal`, `bool`, `add`, `sub`, `mul`, `div`, `mod`, `min`, and `max`.
+- Date and time: `utcNow`, `addDays`, `addToTime`, `subtractFromTime`, `dateDifference`, day-part functions, start-of-period functions, formatting, and parsing.
+- Collections: `array`, `createArray`, `contains`, `intersection`, `union`, `first`, `last`, `join`, `split`, and `sort`.
+
+Common deterministic expressions are translated to SQLite so filtering, counts, and paging remain database-backed. Expressions that cannot be translated are evaluated in memory. Existing relative values such as `currentYear`, `nextSeason`, and `today - 30d` remain supported.
+
 ## Development
 
 Build the solution:

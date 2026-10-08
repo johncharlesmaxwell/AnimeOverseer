@@ -19,12 +19,12 @@ public class AnimeCacheService(AnimeDbContext db, AniListApiService aniList, Jik
     private const string QuickFilterIdsSettingKeyPrefix = "catalogue:quick-filter-anilist-ids:";
     private const int TopUpcomingLimit = 1_000;
 
-    // Catalogue cards need tags for local NSFW/library filtering, but never title
-    // aliases or every artwork variant. Split queries avoid multiplying each card
-    // by its tags and images in one large joined result set.
+    // Catalogue cards need tags and aliases for local filtering, but only the
+    // preferred artwork. Split queries avoid multiplying each card in one join.
     private IQueryable<Anime> CardQuery() => db.Animes.AsNoTracking().AsSplitQuery()
         .Include(a => a.Season)
         .Include(a => a.Images.Where(image => image.Id == image.Anime.PreferredImageId))
+        .Include(a => a.TitleAliases)
         .Include(a => a.AnimeGenres).ThenInclude(x => x.Genre)
         .Include(a => a.AnimeThemes).ThenInclude(x => x.Theme)
         .Include(a => a.AnimeDemographics).ThenInclude(x => x.Demographic);
@@ -34,6 +34,17 @@ public class AnimeCacheService(AnimeDbContext db, AniListApiService aniList, Jik
         .Include(a => a.AnimeGenres).ThenInclude(x => x.Genre)
         .Include(a => a.AnimeThemes).ThenInclude(x => x.Theme)
         .Include(a => a.AnimeDemographics).ThenInclude(x => x.Demographic);
+
+    public Task<List<Anime>> GetExpressionCandidatesAsync() => DetailQuery().ToListAsync();
+
+    public Task<List<Anime>> GetExpressionPreviewSamplesAsync(int count = 4) => DetailQuery()
+        .OrderByDescending(anime => anime.Episodes.HasValue && anime.Duration.HasValue)
+        .ThenByDescending(anime => anime.StartDate.HasValue)
+        .ThenByDescending(anime => anime.AnimeGenres.Count)
+        .ThenByDescending(anime => anime.ModifiedAt)
+        .ThenBy(anime => anime.Title)
+        .Take(Math.Clamp(count, 1, 10))
+        .ToListAsync();
 
     public async Task<List<Anime>> GetSeasonAnimes(int year, string season, bool forceRefresh = false)
     {

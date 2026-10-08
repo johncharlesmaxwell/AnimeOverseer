@@ -1,16 +1,193 @@
 @using AnimeOverseer.Server.Models
+@using AnimeOverseer.Server.Services.Expressions
 
 <div class="filter-group">
-    <div class="filter-group-header"><div class="group-logic-toggle"><button class="logic-btn @(Group.Logic == GroupLogic.And ? "logic-btn--active" : "")" @onclick="() => SetLogic(GroupLogic.And)">AND</button><button class="logic-btn @(Group.Logic == GroupLogic.Or ? "logic-btn--active" : "")" @onclick="() => SetLogic(GroupLogic.Or)">OR</button></div>@if (CanRemove) { <button class="condition-remove" title="Remove group" @onclick="Remove">✕</button> }</div>
-    @foreach (var condition in Group.Conditions) { var cond = condition; <div class="condition-row"><select class="form-select condition-field" value="@cond.Field" @onchange="e => ChangeField(cond, e)">@foreach (var field in Fields) { <option value="@field.Value">@field.Label</option> }</select><select class="form-select condition-op" value="@cond.Operator" @onchange="e => ChangeOperator(cond, e)">@foreach (var op in OperatorsFor(cond.Field)) { <option value="@op">@LabelFor(op)</option> }</select>@if (IsDataOperator(cond.Operator)) { <span class="condition-value condition-value--data">No value needed</span> } else { <div class="condition-values">@for (var index = 0; index < ValuesFor(cond).Count; index++) { var i = index; <div class="condition-value-row"><FilterValueEditor Value="@ValuesFor(cond)[i]" ValueChanged="value => ChangeValue(cond, i, value)" AllowDynamicExpressions="@UsesExpressionInput(cond.Field)" UseOptionSet="@IsSelectField(cond.Field)" UseDatePicker="@IsDateField(cond.Field)" Placeholder="@PlaceholderFor(cond.Field)" Suggestions="@SuggestionsFor(cond)" />@if (ValuesFor(cond).Count > 1) { <button class="condition-remove" @onclick="() => RemoveValue(cond, i)">✕</button> }</div> }<div class="condition-value-actions"><button type="button" class="add-value-btn" @onclick="() => AddValue(cond)">+ Value</button>@if (ValuesFor(cond).Count > 1) { <span>Match</span><button class="value-logic-btn @(cond.ValueLogic == ValueLogic.Any ? "value-logic-btn--active" : "")" @onclick="() => SetValueLogic(cond, ValueLogic.Any)">any</button><button class="value-logic-btn @(cond.ValueLogic == ValueLogic.All ? "value-logic-btn--active" : "")" @onclick="() => SetValueLogic(cond, ValueLogic.All)">all</button> }</div></div> }<button class="condition-remove" title="Remove condition" @onclick="() => RemoveCondition(cond)">✕</button></div> }
-    @foreach (var subgroup in Group.Subgroups) { var child = subgroup; <FilterGroupEditor Group="child" CanRemove="true" OnRemove="() => RemoveSubgroup(child)" OnChanged="OnChanged" AvailableGenres="AvailableGenres" AvailableThemes="AvailableThemes" AvailableDemographics="AvailableDemographics" AllowDynamicExpressions="AllowDynamicExpressions" /> }
+    <div class="filter-group-header">
+        <div class="group-logic-toggle">
+            <button class="logic-btn @(Group.Logic == GroupLogic.And ? "logic-btn--active" : "")" @onclick="() => SetLogic(GroupLogic.And)">AND</button>
+            <button class="logic-btn @(Group.Logic == GroupLogic.Or ? "logic-btn--active" : "")" @onclick="() => SetLogic(GroupLogic.Or)">OR</button>
+        </div>
+        @if (CanRemove) { <button class="condition-remove" title="Remove group" @onclick="Remove">✕</button> }
+    </div>
+
+    @foreach (var condition in Group.Conditions)
+    {
+        var cond = condition;
+        <div class="condition-row">
+            <div class="condition-left-operand">
+                @if (cond.LeftExpression is null)
+                {
+                    <select class="form-select condition-field" value="@cond.Field" @onchange="e => ChangeField(cond, e)">
+                        @foreach (var field in Fields) { <option value="@field.Value">@field.Label</option> }
+                    </select>
+                }
+                else
+                {
+                    <input class="form-input condition-field-expression @(LeftError(cond) is null ? "" : "input-error")"
+                           value="@cond.LeftExpression.Source" @oninput="e => ChangeLeftExpression(cond, e.Value?.ToString() ?? string.Empty)"
+                           placeholder="e.g. length(genres)" />
+                    @if (LeftError(cond) is string error) { <small class="expression-error">@error</small> }
+                }
+                @if (AllowDynamicExpressions)
+                {
+                    <button type="button" class="formulae-button" title="@(cond.LeftExpression is null ? "Use a calculated field" : "Return to a normal field")"
+                            aria-label="Toggle calculated field" @onclick="() => ToggleLeftExpression(cond)"><span class="formulae-icon" aria-hidden="true">{{𝑓}}</span></button>
+                }
+            </div>
+
+            <select class="form-select condition-op" value="@cond.Operator" @onchange="e => ChangeOperator(cond, e)">
+                @foreach (var op in OperatorsForCondition(cond)) { <option value="@op">@LabelFor(op)</option> }
+            </select>
+
+            @if (IsDataOperator(cond.Operator))
+            {
+                <span class="condition-value condition-value--data">No value needed</span>
+            }
+            else
+            {
+                <div class="condition-values">
+                    @for (var index = 0; index < ValuesFor(cond).Count; index++)
+                    {
+                        var valueIndex = index;
+                        <div class="condition-value-row">
+                            <FilterValueEditor Value="@ValuesFor(cond)[valueIndex]" ValueChanged="value => ChangeValue(cond, valueIndex, value)"
+                                               AllowDynamicExpressions="@UsesExpressionInput(cond.Field)" UseOptionSet="@(cond.LeftExpression is null && IsSelectField(cond.Field))"
+                                               UseDatePicker="@(cond.LeftExpression is null && IsDateField(cond.Field))" Placeholder="@PlaceholderFor(cond.Field)"
+                                               Suggestions="@SuggestionsFor(cond)" />
+                            @if (ValuesFor(cond).Count > 1) { <button class="condition-remove" @onclick="() => RemoveValue(cond, valueIndex)">✕</button> }
+                        </div>
+                    }
+                    <div class="condition-value-actions">
+                        <button type="button" class="add-value-btn" @onclick="() => AddValue(cond)">+ Value</button>
+                        @if (ValuesFor(cond).Count > 1)
+                        {
+                            <span>Match</span>
+                            <button class="value-logic-btn @(cond.ValueLogic == ValueLogic.Any ? "value-logic-btn--active" : "")" @onclick="() => SetValueLogic(cond, ValueLogic.Any)">any</button>
+                            <button class="value-logic-btn @(cond.ValueLogic == ValueLogic.All ? "value-logic-btn--active" : "")" @onclick="() => SetValueLogic(cond, ValueLogic.All)">all</button>
+                        }
+                    </div>
+                </div>
+            }
+            <button class="condition-remove" title="Remove condition" @onclick="() => RemoveCondition(cond)">✕</button>
+        </div>
+    }
+
+    @foreach (var subgroup in Group.Subgroups)
+    {
+        var child = subgroup;
+        <FilterGroupEditor Group="child" CanRemove="true" OnRemove="() => RemoveSubgroup(child)" OnChanged="OnChanged"
+                           AvailableGenres="AvailableGenres" AvailableThemes="AvailableThemes" AvailableDemographics="AvailableDemographics"
+                           AllowDynamicExpressions="AllowDynamicExpressions" />
+    }
     <div class="group-actions"><button class="add-condition-btn" @onclick="AddCondition">+ Add Condition</button><button class="add-condition-btn" @onclick="AddSubgroup">+ Add Subgroup</button></div>
 </div>
 
 @code {
-    [Parameter] public FilterGroup Group { get; set; } = new(); [Parameter] public bool CanRemove { get; set; } [Parameter] public EventCallback OnRemove { get; set; } [Parameter] public EventCallback OnChanged { get; set; }
-    [Parameter] public List<string> AvailableGenres { get; set; } = []; [Parameter] public List<string> AvailableThemes { get; set; } = []; [Parameter] public List<string> AvailableDemographics { get; set; } = []; [Parameter] public bool AllowDynamicExpressions { get; set; }
-    private Task Notify() => OnChanged.InvokeAsync(); private async Task Remove() => await OnRemove.InvokeAsync(); private async Task SetLogic(GroupLogic l) { Group.Logic = l; await Notify(); } private async Task AddCondition() { Group.Conditions.Add(new()); await Notify(); } private async Task AddSubgroup() { Group.Subgroups.Add(new()); await Notify(); } private async Task RemoveSubgroup(FilterGroup g) { Group.Subgroups.Remove(g); await Notify(); } private async Task RemoveCondition(FilterCondition c) { Group.Conditions.Remove(c); if (Group.Conditions.Count == 0 && Group.Subgroups.Count == 0) Group.Conditions.Add(new()); await Notify(); }
-    private async Task ChangeField(FilterCondition c, ChangeEventArgs e) { c.Field = Enum.Parse<FilterField>(e.Value!.ToString()!); c.Operator = OperatorsFor(c.Field)[0]; c.Value = string.Empty; c.Values.Clear(); await Notify(); } private async Task ChangeOperator(FilterCondition c, ChangeEventArgs e) { c.Operator = Enum.Parse<FilterOperator>(e.Value!.ToString()!); await Notify(); } private List<string> ValuesFor(FilterCondition c) { if (c.Values.Count == 0) c.Values.Add(c.Value); return c.Values; } private async Task ChangeValue(FilterCondition c, int i, string v) { ValuesFor(c)[i] = v; c.Value = c.Values[0]; await Notify(); } private async Task AddValue(FilterCondition c) { ValuesFor(c).Add(string.Empty); await Notify(); } private async Task RemoveValue(FilterCondition c, int i) { ValuesFor(c).RemoveAt(i); c.Value = c.Values.FirstOrDefault() ?? string.Empty; await Notify(); } private async Task SetValueLogic(FilterCondition c, ValueLogic l) { c.ValueLogic = l; await Notify(); }
-    private List<string> SuggestionsFor(FilterCondition c) => c.Field switch { FilterField.Themes => AvailableThemes, FilterField.Demographics => AvailableDemographics, FilterField.Genres => AvailableGenres, _ when IsSelectField(c.Field) => SelectValuesFor(c.Field).ToList(), _ => [] }; private static bool IsDataOperator(FilterOperator op) => op is FilterOperator.ContainsData or FilterOperator.DoesNotContainData; private static bool IsDateField(FilterField f) => f is FilterField.StartDate or FilterField.EndDate or FilterField.CachedAt or FilterField.CreatedAt or FilterField.ModifiedAt; private bool UsesExpressionInput(FilterField f) => AllowDynamicExpressions && (f is FilterField.Year or FilterField.Season || IsDateField(f) || IsStringField(f)); private static bool IsStringField(FilterField f) => f is FilterField.Title or FilterField.OriginalTitle or FilterField.Synopsis or FilterField.Type or FilterField.Status or FilterField.Season or FilterField.Genres or FilterField.Themes or FilterField.Demographics; private static List<FilterOperator> OperatorsFor(FilterField f) => f switch { FilterField.Episodes or FilterField.Duration or FilterField.Rating or FilterField.Year or FilterField.MalId or FilterField.AniListId or FilterField.KitsuId or FilterField.StartDate or FilterField.EndDate or FilterField.CachedAt or FilterField.CreatedAt or FilterField.ModifiedAt => [FilterOperator.ContainsData, FilterOperator.DoesNotContainData, FilterOperator.Equals, FilterOperator.NotEquals, FilterOperator.GreaterThan, FilterOperator.GreaterThanOrEqual, FilterOperator.LessThan, FilterOperator.LessThanOrEqual], FilterField.InLibrary => [FilterOperator.Equals, FilterOperator.NotEquals], FilterField.Type or FilterField.Status or FilterField.Season => [FilterOperator.ContainsData, FilterOperator.DoesNotContainData, FilterOperator.Equals, FilterOperator.NotEquals, FilterOperator.Contains, FilterOperator.NotContains], _ => [FilterOperator.ContainsData, FilterOperator.DoesNotContainData, FilterOperator.Contains, FilterOperator.NotContains, FilterOperator.StartsWith, FilterOperator.EndsWith, FilterOperator.Equals, FilterOperator.NotEquals] }; private static string LabelFor(FilterOperator op) => op switch { FilterOperator.ContainsData => "contains data", FilterOperator.DoesNotContainData => "does not contain data", FilterOperator.Contains => "contains", FilterOperator.NotContains => "not contains", FilterOperator.StartsWith => "starts with", FilterOperator.EndsWith => "ends with", FilterOperator.Equals => "=", FilterOperator.NotEquals => "≠", FilterOperator.GreaterThan => ">", FilterOperator.LessThan => "<", FilterOperator.GreaterThanOrEqual => "≥", FilterOperator.LessThanOrEqual => "≤", _ => op.ToString() }; private static string PlaceholderFor(FilterField f) => f switch { FilterField.Episodes => "e.g. 12", FilterField.Duration => "e.g. 24", FilterField.Rating => "e.g. 7.5", FilterField.Year => "e.g. 2024 or currentYear", FilterField.StartDate or FilterField.EndDate or FilterField.CachedAt or FilterField.CreatedAt or FilterField.ModifiedAt => "e.g. today - 30d", _ => "Value…" }; private static bool IsSelectField(FilterField f) => f is FilterField.Type or FilterField.Status or FilterField.Season or FilterField.InLibrary or FilterField.Genres or FilterField.Themes or FilterField.Demographics; private static string[] SelectValuesFor(FilterField f) => f switch { FilterField.Type => ["TV", "Movie", "OVA", "ONA", "Special", "Music"], FilterField.Status => ["Currently Airing", "Finished Airing", "Not yet aired"], FilterField.Season => ["spring", "summer", "fall", "winter"], FilterField.InLibrary => ["Yes", "No"], _ => [] }; private static readonly (FilterField Value, string Label)[] Fields = [(FilterField.Title, "Title"), (FilterField.OriginalTitle, "Original Title"), (FilterField.Synopsis, "Synopsis"), (FilterField.Type, "Type"), (FilterField.Status, "Status"), (FilterField.Season, "Season"), (FilterField.Episodes, "Episodes"), (FilterField.Duration, "Duration"), (FilterField.Rating, "Rating"), (FilterField.Genres, "Genres"), (FilterField.Themes, "Themes"), (FilterField.Demographics, "Demographics"), (FilterField.Year, "Year"), (FilterField.MalId, "MAL ID"), (FilterField.AniListId, "AniList ID"), (FilterField.KitsuId, "Kitsu ID"), (FilterField.StartDate, "Start Date"), (FilterField.EndDate, "End Date"), (FilterField.CachedAt, "Cached At"), (FilterField.CreatedAt, "Created At"), (FilterField.ModifiedAt, "Modified At"), (FilterField.InLibrary, "In Library")];
+    [Parameter] public FilterGroup Group { get; set; } = new();
+    [Parameter] public bool CanRemove { get; set; }
+    [Parameter] public EventCallback OnRemove { get; set; }
+    [Parameter] public EventCallback OnChanged { get; set; }
+    [Parameter] public List<string> AvailableGenres { get; set; } = [];
+    [Parameter] public List<string> AvailableThemes { get; set; } = [];
+    [Parameter] public List<string> AvailableDemographics { get; set; } = [];
+    [Parameter] public bool AllowDynamicExpressions { get; set; }
+
+    private Task Notify() => OnChanged.InvokeAsync();
+    private async Task Remove() => await OnRemove.InvokeAsync();
+    private async Task SetLogic(GroupLogic logic) { Group.Logic = logic; await Notify(); }
+    private async Task AddCondition() { Group.Conditions.Add(new()); await Notify(); }
+    private async Task AddSubgroup() { Group.Subgroups.Add(new()); await Notify(); }
+    private async Task RemoveSubgroup(FilterGroup group) { Group.Subgroups.Remove(group); await Notify(); }
+    private async Task RemoveCondition(FilterCondition condition) { Group.Conditions.Remove(condition); if (Group.Conditions.Count == 0 && Group.Subgroups.Count == 0) Group.Conditions.Add(new()); await Notify(); }
+
+    private async Task ChangeField(FilterCondition condition, ChangeEventArgs args)
+    {
+        condition.Field = Enum.Parse<FilterField>(args.Value!.ToString()!);
+        condition.Operator = OperatorsFor(condition.Field)[0];
+        condition.Value = string.Empty;
+        condition.Values.Clear();
+        condition.RightExpressions.Clear();
+        await Notify();
+    }
+
+    private async Task ToggleLeftExpression(FilterCondition condition)
+    {
+        condition.LeftExpression = condition.LeftExpression is null
+            ? FilterExpressionParser.ParseOperand(FilterExpressionAdapter.FieldName(condition.Field))
+            : null;
+        condition.Operator = OperatorsForCondition(condition)[0];
+        await Notify();
+    }
+
+    private async Task ChangeLeftExpression(FilterCondition condition, string source)
+    {
+        condition.LeftExpression = FilterExpressionParser.ParseOperand(source);
+        await Notify();
+    }
+
+    private static string? LeftError(FilterCondition condition)
+    {
+        if (condition.LeftExpression is null) return null;
+        var parsed = FilterExpressionParser.Parse(condition.LeftExpression.Source);
+        if (!parsed.IsValid) return parsed.Diagnostics.FirstOrDefault()?.Message;
+        return FilterExpressionValidator.Validate(parsed.Root!).FirstOrDefault()?.Message;
+    }
+
+    private async Task ChangeOperator(FilterCondition condition, ChangeEventArgs args) { condition.Operator = Enum.Parse<FilterOperator>(args.Value!.ToString()!); await Notify(); }
+    private List<string> ValuesFor(FilterCondition condition) { if (condition.Values.Count == 0) condition.Values.Add(condition.Value); return condition.Values; }
+    private async Task ChangeValue(FilterCondition condition, int index, string value) { ValuesFor(condition)[index] = value; condition.Value = condition.Values[0]; condition.RightExpressions.Clear(); await Notify(); }
+    private async Task AddValue(FilterCondition condition) { ValuesFor(condition).Add(string.Empty); condition.RightExpressions.Clear(); await Notify(); }
+    private async Task RemoveValue(FilterCondition condition, int index) { ValuesFor(condition).RemoveAt(index); condition.Value = condition.Values.FirstOrDefault() ?? string.Empty; condition.RightExpressions.Clear(); await Notify(); }
+    private async Task SetValueLogic(FilterCondition condition, ValueLogic logic) { condition.ValueLogic = logic; await Notify(); }
+
+    private List<string> SuggestionsFor(FilterCondition condition) => condition.LeftExpression is not null ? [] : condition.Field switch
+    {
+        FilterField.Themes => AvailableThemes,
+        FilterField.Demographics => AvailableDemographics,
+        FilterField.Genres => AvailableGenres,
+        _ when IsSelectField(condition.Field) => SelectValuesFor(condition.Field).ToList(),
+        _ => []
+    };
+
+    private static bool IsDataOperator(FilterOperator op) => op is FilterOperator.ContainsData or FilterOperator.DoesNotContainData;
+    private static bool IsDateField(FilterField field) => field is FilterField.StartDate or FilterField.EndDate or FilterField.CachedAt or FilterField.CreatedAt or FilterField.ModifiedAt;
+    private bool UsesExpressionInput(FilterField field) => AllowDynamicExpressions;
+    private static List<FilterOperator> OperatorsForCondition(FilterCondition condition)
+    {
+        if (condition.LeftExpression is null) return OperatorsFor(condition.Field);
+        var parsed = FilterExpressionParser.Parse(condition.LeftExpression.Source);
+        var type = parsed.IsValid ? FilterExpressionValidator.InferType(parsed.Root!) : null;
+        return type switch
+        {
+            ExpressionValueType.Number or ExpressionValueType.DateTime =>
+                [FilterOperator.ContainsData, FilterOperator.DoesNotContainData, FilterOperator.Equals, FilterOperator.NotEquals, FilterOperator.GreaterThan, FilterOperator.GreaterThanOrEqual, FilterOperator.LessThan, FilterOperator.LessThanOrEqual],
+            ExpressionValueType.Boolean => [FilterOperator.Equals, FilterOperator.NotEquals],
+            _ => [FilterOperator.ContainsData, FilterOperator.DoesNotContainData, FilterOperator.Contains, FilterOperator.NotContains, FilterOperator.StartsWith, FilterOperator.EndsWith, FilterOperator.Equals, FilterOperator.NotEquals]
+        };
+    }
+    private static List<FilterOperator> OperatorsFor(FilterField field) => field switch
+    {
+        FilterField.Episodes or FilterField.Duration or FilterField.Rating or FilterField.Year or FilterField.MalId or FilterField.AniListId or FilterField.KitsuId or
+        FilterField.ImageCount or FilterField.StartDate or FilterField.EndDate or FilterField.CachedAt or FilterField.CreatedAt or FilterField.ModifiedAt =>
+            [FilterOperator.ContainsData, FilterOperator.DoesNotContainData, FilterOperator.Equals, FilterOperator.NotEquals, FilterOperator.GreaterThan, FilterOperator.GreaterThanOrEqual, FilterOperator.LessThan, FilterOperator.LessThanOrEqual],
+        FilterField.InLibrary or FilterField.HasLocalImage or FilterField.HasEnglishTitle or FilterField.NamesReviewed => [FilterOperator.Equals, FilterOperator.NotEquals],
+        FilterField.Type or FilterField.Status or FilterField.Season => [FilterOperator.ContainsData, FilterOperator.DoesNotContainData, FilterOperator.Equals, FilterOperator.NotEquals, FilterOperator.Contains, FilterOperator.NotContains],
+        _ => [FilterOperator.ContainsData, FilterOperator.DoesNotContainData, FilterOperator.Contains, FilterOperator.NotContains, FilterOperator.StartsWith, FilterOperator.EndsWith, FilterOperator.Equals, FilterOperator.NotEquals]
+    };
+    private static string LabelFor(FilterOperator op) => op switch { FilterOperator.ContainsData => "contains data", FilterOperator.DoesNotContainData => "does not contain data", FilterOperator.Contains => "contains", FilterOperator.NotContains => "not contains", FilterOperator.StartsWith => "starts with", FilterOperator.EndsWith => "ends with", FilterOperator.Equals => "=", FilterOperator.NotEquals => "≠", FilterOperator.GreaterThan => ">", FilterOperator.LessThan => "<", FilterOperator.GreaterThanOrEqual => "≥", FilterOperator.LessThanOrEqual => "≤", _ => op.ToString() };
+    private static string PlaceholderFor(FilterField field) => field switch { FilterField.Episodes => "e.g. 12", FilterField.Duration => "e.g. 24", FilterField.Rating => "e.g. 7.5", FilterField.Year => "e.g. 2024 or currentYear", FilterField.StartDate or FilterField.EndDate or FilterField.CachedAt or FilterField.CreatedAt or FilterField.ModifiedAt => "e.g. today - 30d", _ => "Value…" };
+    private static bool IsSelectField(FilterField field) => field is FilterField.Type or FilterField.Status or FilterField.Season or FilterField.InLibrary or FilterField.HasLocalImage or FilterField.HasEnglishTitle or FilterField.NamesReviewed or FilterField.Genres or FilterField.Themes or FilterField.Demographics;
+    private static string[] SelectValuesFor(FilterField field) => field switch { FilterField.Type => ["TV", "Movie", "OVA", "ONA", "Special", "Music"], FilterField.Status => ["Currently Airing", "Finished Airing", "Not yet aired"], FilterField.Season => ["spring", "summer", "fall", "winter"], FilterField.InLibrary or FilterField.HasLocalImage or FilterField.HasEnglishTitle or FilterField.NamesReviewed => ["Yes", "No"], _ => [] };
+    private static readonly (FilterField Value, string Label)[] Fields =
+    [
+        (FilterField.Title, "Title"), (FilterField.OriginalTitle, "Original Title"), (FilterField.Synopsis, "Synopsis"),
+        (FilterField.Type, "Type"), (FilterField.Status, "Status"), (FilterField.Season, "Season"),
+        (FilterField.Episodes, "Episodes"), (FilterField.Duration, "Duration"), (FilterField.Rating, "Rating"),
+        (FilterField.Genres, "Genres"), (FilterField.Themes, "Themes"), (FilterField.Demographics, "Demographics"),
+        (FilterField.Year, "Year"), (FilterField.MalId, "MAL ID"), (FilterField.AniListId, "AniList ID"),
+        (FilterField.KitsuId, "Kitsu ID"), (FilterField.StartDate, "Start Date"), (FilterField.EndDate, "End Date"),
+        (FilterField.CachedAt, "Cached At"), (FilterField.CreatedAt, "Created At"), (FilterField.ModifiedAt, "Modified At"),
+        (FilterField.InLibrary, "In Library"), (FilterField.TitleAliases, "Title aliases"), (FilterField.ImageCount, "Image count"),
+        (FilterField.HasLocalImage, "Has local image"), (FilterField.HasEnglishTitle, "Has English title"), (FilterField.NamesReviewed, "Names reviewed")
+    ];
 }

@@ -1,4 +1,5 @@
 using AnimeOverseer.Server.Models;
+using AnimeOverseer.Server.Services.Expressions;
 
 namespace AnimeOverseer.Server.Services;
 
@@ -6,158 +7,126 @@ public static class FilterEngine
 {
     public static List<Anime> Apply(List<Anime> animes, FilterState state, Func<Anime, bool>? isInLibrary = null)
     {
-        var activeGroups = state.Groups
-            .Where(FilterState.IsActiveGroup)
-            .ToList();
-
+        var activeGroups = state.Groups.Where(FilterState.IsActiveGroup).ToList();
         if (activeGroups.Count == 0) return animes;
-
+        var context = ExpressionEvaluationContext.Create(isInLibrary);
         return state.TopLevelLogic == GroupLogic.And
-            ? animes.Where(a => activeGroups.All(g => MatchGroup(a, g, isInLibrary))).ToList()
-            : animes.Where(a => activeGroups.Any(g => MatchGroup(a, g, isInLibrary))).ToList();
+            ? animes.Where(anime => activeGroups.All(group => MatchGroup(anime, group, context))).ToList()
+            : animes.Where(anime => activeGroups.Any(group => MatchGroup(anime, group, context))).ToList();
     }
 
-    private static bool MatchGroup(Anime anime, FilterGroup group, Func<Anime, bool>? isInLibrary)
+    private static bool MatchGroup(Anime anime, FilterGroup group, ExpressionEvaluationContext context)
     {
-        var conditions = group.Conditions.Where(FilterState.IsActiveCondition)
-            .Select(c => MatchCondition(anime, c, isInLibrary));
-        var subgroups = group.Subgroups.Where(FilterState.IsActiveGroup)
-            .Select(g => MatchGroup(anime, g, isInLibrary));
-        var matches = conditions.Concat(subgroups).ToList();
-        if (matches.Count == 0) return true;
-
-        return group.Logic == GroupLogic.And
-            ? matches.All(match => match)
-            : matches.Any(match => match);
+        var matches = group.Conditions.Where(FilterState.IsActiveCondition).Select(condition => MatchCondition(anime, condition, context))
+            .Concat(group.Subgroups.Where(FilterState.IsActiveGroup).Select(subgroup => MatchGroup(anime, subgroup, context))).ToList();
+        return matches.Count == 0 || (group.Logic == GroupLogic.And ? matches.All(match => match) : matches.Any(match => match));
     }
 
-    private static bool MatchCondition(Anime anime, FilterCondition c, Func<Anime, bool>? isInLibrary)
+    private static bool MatchCondition(Anime anime, FilterCondition condition, ExpressionEvaluationContext context)
     {
-        if (!FilterState.IsActiveCondition(c)) return true;
+        if (!FilterExpressionAdapter.TryRoot(FilterExpressionAdapter.Left(condition), out var leftRoot) ||
+            !FilterExpressionEvaluator.TryEvaluate(leftRoot, anime, context, out var left))
+            return false;
 
-        if (c.Operator is FilterOperator.ContainsData or FilterOperator.DoesNotContainData)
-            return MatchConditionValue(anime, c, c.Value.Trim(), isInLibrary);
-
-        var values = c.EffectiveValues.Where(value => !string.IsNullOrWhiteSpace(value)).ToList();
-        return c.ValueLogic == ValueLogic.All
-            ? values.All(value => MatchConditionValue(anime, c, value.Trim(), isInLibrary))
-            : values.Any(value => MatchConditionValue(anime, c, value.Trim(), isInLibrary));
-    }
-
-    private static bool MatchConditionValue(Anime anime, FilterCondition c, string val, Func<Anime, bool>? isInLibrary)
-    {
-
-        return c.Field switch
+        if (condition.Operator is FilterOperator.ContainsData or FilterOperator.DoesNotContainData)
         {
-            FilterField.Title        => MatchText(anime.Title, c.Operator, val),
-            FilterField.OriginalTitle => MatchText(anime.OriginalTitle, c.Operator, val),
-            FilterField.Synopsis     => MatchText(anime.Synopsis, c.Operator, val),
-            FilterField.Type         => MatchText(anime.Type, c.Operator, val),
-            FilterField.Status       => MatchText(anime.Status, c.Operator, val),
-            FilterField.Season       => MatchText(anime.Season?.Name, c.Operator, val),
-            FilterField.Episodes     => MatchNumber((double?)anime.Episodes, c.Operator, val),
-            FilterField.Duration     => MatchNumber((double?)anime.Duration, c.Operator, val),
-            FilterField.Rating       => MatchNumber((double?)anime.Rating, c.Operator, val),
-            FilterField.Genres       => MatchTags(anime.AnimeGenres.Select(ag => ag.Genre?.Name ?? ""), c.Operator, val),
-            FilterField.Themes       => MatchTags(anime.AnimeThemes.Select(at => at.Theme?.Name ?? ""), c.Operator, val),
-            FilterField.Demographics => MatchTags(anime.AnimeDemographics.Select(ad => ad.Demographic?.Name ?? ""), c.Operator, val),
-            FilterField.Year         => MatchNumber((double?)anime.Season?.Year, c.Operator, val),
-            FilterField.MalId        => MatchNumber((double?)anime.MALId, c.Operator, val),
-            FilterField.AniListId    => MatchNumber((double?)anime.AniListId, c.Operator, val),
-            FilterField.KitsuId      => MatchNumber((double?)anime.KitsuId, c.Operator, val),
-            FilterField.StartDate    => MatchDate(anime.StartDate, c.Operator, val),
-            FilterField.EndDate      => MatchDate(anime.EndDate, c.Operator, val),
-            FilterField.CachedAt     => MatchDate(anime.CachedAt, c.Operator, val),
-            FilterField.CreatedAt    => MatchDate(anime.CreatedAt, c.Operator, val),
-            FilterField.ModifiedAt   => MatchDate(anime.ModifiedAt, c.Operator, val),
-            FilterField.InLibrary    => MatchBoolean(isInLibrary?.Invoke(anime) ?? false, c.Operator, val),
-            _                        => true
-        };
+            var hasData = HasData(left);
+            return condition.Operator == FilterOperator.ContainsData ? hasData : !hasData;
+        }
+
+        var comparisons = new List<bool>();
+        foreach (var rightExpression in FilterExpressionAdapter.Rights(condition))
+        {
+            if (!FilterExpressionAdapter.TryRoot(rightExpression, out var rightRoot) ||
+                !FilterExpressionEvaluator.TryEvaluate(rightRoot, anime, context, out var right))
+                comparisons.Add(false);
+            else comparisons.Add(Compare(left, condition.Operator, right));
+        }
+
+        if (comparisons.Count == 0) return false;
+        return condition.ValueLogic == ValueLogic.All ? comparisons.All(value => value) : comparisons.Any(value => value);
     }
 
-    private static bool MatchTags(IEnumerable<string> names, FilterOperator op, string val)
+    private static bool Compare(ExpressionValue left, FilterOperator op, ExpressionValue right)
     {
-        var list = names.ToList();
-        return op switch
-        {
-            FilterOperator.ContainsData => list.Count > 0,
-            FilterOperator.DoesNotContainData => list.Count == 0,
-            FilterOperator.NotContains => list.All(n => !n.Contains(val, StringComparison.OrdinalIgnoreCase)),
-            FilterOperator.NotEquals   => list.All(n => !n.Equals(val, StringComparison.OrdinalIgnoreCase)),
-            _                          => list.Any(n => MatchText(n, op, val))
-        };
+        if (left.Type == ExpressionValueType.StringCollection)
+            return CompareCollection((IReadOnlyList<string>)left.Value!, op, FilterExpressionEvaluator.AsString(right));
+        if ((left.IsNull && right.Type == ExpressionValueType.String || right.IsNull && left.Type == ExpressionValueType.String) &&
+            op is FilterOperator.Contains or FilterOperator.NotContains or FilterOperator.StartsWith or FilterOperator.EndsWith or FilterOperator.Equals or FilterOperator.NotEquals)
+            return CompareText(FilterExpressionEvaluator.AsString(left), op, FilterExpressionEvaluator.AsString(right));
+        if (left.IsNull || right.IsNull)
+            return op == FilterOperator.NotEquals && left.IsNull != right.IsNull;
+
+        if (left.Type == ExpressionValueType.Number && TryNumber(right, out var rightNumber))
+            return CompareComparable((decimal)left.Value!, op, rightNumber);
+        if (left.Type == ExpressionValueType.DateTime && TryDate(right, out var rightDate))
+            return CompareComparable(((DateTime)left.Value!).Date, op, rightDate.Date);
+        if (left.Type == ExpressionValueType.Boolean && TryBoolean(right, out var rightBoolean))
+            return op switch { FilterOperator.Equals => (bool)left.Value! == rightBoolean, FilterOperator.NotEquals => (bool)left.Value! != rightBoolean, _ => false };
+
+        var leftText = FilterExpressionEvaluator.AsString(left);
+        var rightText = FilterExpressionEvaluator.AsString(right);
+        return CompareText(leftText, op, rightText);
     }
 
-    private static bool MatchText(string? field, FilterOperator op, string val)
-    {
-        var cmp = StringComparison.OrdinalIgnoreCase;
-        if (op == FilterOperator.ContainsData) return !string.IsNullOrEmpty(field);
-        if (op == FilterOperator.DoesNotContainData) return string.IsNullOrEmpty(field);
-
-        field ??= string.Empty;
-        return op switch
+    private static bool CompareText(string leftText, FilterOperator op, string rightText) => op switch
         {
-            FilterOperator.Contains           => field.Contains(val, cmp),
-            FilterOperator.NotContains        => !field.Contains(val, cmp),
-            FilterOperator.StartsWith         => field.StartsWith(val, cmp),
-            FilterOperator.EndsWith           => field.EndsWith(val, cmp),
-            FilterOperator.Equals             => field.Equals(val, cmp),
-            FilterOperator.NotEquals          => !field.Equals(val, cmp),
-            _                                 => true
+            FilterOperator.Contains => leftText.Contains(rightText, StringComparison.OrdinalIgnoreCase),
+            FilterOperator.NotContains => !leftText.Contains(rightText, StringComparison.OrdinalIgnoreCase),
+            FilterOperator.StartsWith => leftText.StartsWith(rightText, StringComparison.OrdinalIgnoreCase),
+            FilterOperator.EndsWith => leftText.EndsWith(rightText, StringComparison.OrdinalIgnoreCase),
+            FilterOperator.Equals => leftText.Equals(rightText, StringComparison.OrdinalIgnoreCase),
+            FilterOperator.NotEquals => !leftText.Equals(rightText, StringComparison.OrdinalIgnoreCase),
+            _ => false
         };
+
+    private static bool CompareCollection(IReadOnlyList<string> values, FilterOperator op, string right) => op switch
+    {
+        FilterOperator.Contains => values.Any(value => value.Contains(right, StringComparison.OrdinalIgnoreCase)),
+        FilterOperator.NotContains => values.All(value => !value.Contains(right, StringComparison.OrdinalIgnoreCase)),
+        FilterOperator.StartsWith => values.Any(value => value.StartsWith(right, StringComparison.OrdinalIgnoreCase)),
+        FilterOperator.EndsWith => values.Any(value => value.EndsWith(right, StringComparison.OrdinalIgnoreCase)),
+        FilterOperator.Equals => values.Any(value => value.Equals(right, StringComparison.OrdinalIgnoreCase)),
+        FilterOperator.NotEquals => values.All(value => !value.Equals(right, StringComparison.OrdinalIgnoreCase)),
+        _ => false
+    };
+
+    private static bool CompareComparable<T>(T left, FilterOperator op, T right) where T : IComparable<T> => op switch
+    {
+        FilterOperator.Equals => left.CompareTo(right) == 0,
+        FilterOperator.NotEquals => left.CompareTo(right) != 0,
+        FilterOperator.GreaterThan => left.CompareTo(right) > 0,
+        FilterOperator.LessThan => left.CompareTo(right) < 0,
+        FilterOperator.GreaterThanOrEqual => left.CompareTo(right) >= 0,
+        FilterOperator.LessThanOrEqual => left.CompareTo(right) <= 0,
+        _ => false
+    };
+
+    private static bool HasData(ExpressionValue value) => !value.IsNull && value.Type switch
+    {
+        ExpressionValueType.String => !string.IsNullOrEmpty((string)value.Value!),
+        ExpressionValueType.StringCollection => ((IReadOnlyList<string>)value.Value!).Count > 0,
+        _ => true
+    };
+
+    private static bool TryNumber(ExpressionValue value, out decimal number)
+    {
+        if (value.Type == ExpressionValueType.Number) { number = (decimal)value.Value!; return true; }
+        return decimal.TryParse(FilterExpressionEvaluator.AsString(value), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out number);
     }
 
-    private static bool MatchNumber(double? field, FilterOperator op, string val)
+    private static bool TryDate(ExpressionValue value, out DateTime date)
     {
-        if (op == FilterOperator.ContainsData) return field.HasValue;
-        if (op == FilterOperator.DoesNotContainData) return !field.HasValue;
-        if (!double.TryParse(val, out var target)) return true;
-        if (!field.HasValue) return op == FilterOperator.NotEquals;
-
-        return op switch
-        {
-            FilterOperator.Equals             => field.Value == target,
-            FilterOperator.NotEquals          => field.Value != target,
-            FilterOperator.GreaterThan        => field.Value > target,
-            FilterOperator.LessThan           => field.Value < target,
-            FilterOperator.GreaterThanOrEqual => field.Value >= target,
-            FilterOperator.LessThanOrEqual    => field.Value <= target,
-            _                                 => true
-        };
+        if (value.Type == ExpressionValueType.DateTime) { date = (DateTime)value.Value!; return true; }
+        return DateTime.TryParse(FilterExpressionEvaluator.AsString(value), System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.AssumeUniversal, out date);
     }
 
-    private static bool MatchDate(DateTime? field, FilterOperator op, string val)
+    private static bool TryBoolean(ExpressionValue value, out bool boolean)
     {
-        if (op == FilterOperator.ContainsData) return field.HasValue;
-        if (op == FilterOperator.DoesNotContainData) return !field.HasValue;
-        if (!DateTime.TryParse(val, out var target)) return true;
-        if (!field.HasValue) return op == FilterOperator.NotEquals;
-
-        return op switch
-        {
-            FilterOperator.Equals             => field.Value.Date == target.Date,
-            FilterOperator.NotEquals          => field.Value.Date != target.Date,
-            FilterOperator.GreaterThan        => field.Value.Date > target.Date,
-            FilterOperator.LessThan           => field.Value.Date < target.Date,
-            FilterOperator.GreaterThanOrEqual => field.Value.Date >= target.Date,
-            FilterOperator.LessThanOrEqual    => field.Value.Date <= target.Date,
-            _                                 => true
-        };
-    }
-
-    private static bool MatchDate(DateTime field, FilterOperator op, string val) =>
-        MatchDate((DateTime?)field, op, val);
-
-    private static bool MatchBoolean(bool field, FilterOperator op, string val)
-    {
-        if (!bool.TryParse(val, out var target))
-            target = val.Equals("yes", StringComparison.OrdinalIgnoreCase);
-
-        return op switch
-        {
-            FilterOperator.Equals => field == target,
-            FilterOperator.NotEquals => field != target,
-            _ => true
-        };
+        if (value.Type == ExpressionValueType.Boolean) { boolean = (bool)value.Value!; return true; }
+        var text = FilterExpressionEvaluator.AsString(value);
+        if (text.Equals("yes", StringComparison.OrdinalIgnoreCase)) { boolean = true; return true; }
+        if (text.Equals("no", StringComparison.OrdinalIgnoreCase)) { boolean = false; return true; }
+        return bool.TryParse(text, out boolean);
     }
 }

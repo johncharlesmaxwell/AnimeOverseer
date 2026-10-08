@@ -1,4 +1,5 @@
 @using AnimeOverseer.Server.Models
+@using AnimeOverseer.Server.Services
 
 <div class="filter-section">
     <button class="filter-section-toggle @(State.IsActive ? "filter-section-toggle--active" : "")" @onclick="ToggleExpanded">
@@ -12,6 +13,10 @@
                 var group = State.Groups[index];
                 if (index > 0) { <div class="group-connector"><button class="logic-pill @(State.TopLevelLogic == GroupLogic.And ? "logic-pill--and" : "logic-pill--or")" @onclick="ToggleTopLogic">@State.TopLevelLogic.ToString().ToUpper()</button></div> }
                 <FilterGroupEditor Group="group" CanRemove="@(State.Groups.Count > 1)" OnRemove="() => RemoveGroup(index)" OnChanged="Notify" AvailableGenres="AvailableGenres" AvailableThemes="AvailableThemes" AvailableDemographics="AvailableDemographics" AllowDynamicExpressions="AllowDynamicExpressions" />
+            }
+            @if (State.IsActive && CollectionFilterExpressionResolver.RequiresAnimeContext(State))
+            {
+                <p class="expression-execution-note">This filter contains an expression that is evaluated in memory, so it may be slower on large catalogues.</p>
             }
             <div class="filter-footer"><button class="add-group-btn" @onclick="AddGroup">+ Add Group</button>@if (State.IsActive) { <button class="clear-filters-btn" @onclick="ClearAll">✕ Clear All</button> }</div>
         </div>

@@ -1,0 +1,54 @@
+@using AnimeOverseer.Server.Models
+@using AnimeOverseer.Server.Services.Expressions
+
+@if (Node is FunctionExpression function)
+{
+    <div class="expression-node expression-node--function @TypeClass">
+        <div class="expression-node-heading">
+            <span class="expression-node-icon" aria-hidden="true">@TypeIcon</span>
+            <strong>@FunctionLabel(function.Name)</strong>
+            <small>@TypeLabel</small>
+        </div>
+        <ol class="expression-node-arguments">
+            @for (var index = 0; index < function.Arguments.Count; index++)
+            {
+                var argument = function.Arguments[index];
+                <li>
+                    <span class="expression-argument-label">Argument @(index + 1)</span>
+                    <ExpressionNodeView Node="argument" />
+                </li>
+            }
+        </ol>
+    </div>
+}
+else if (Node is FieldExpression field)
+{
+    <div class="expression-node expression-node--leaf @TypeClass">
+        <span class="expression-node-icon" aria-hidden="true">@TypeIcon</span>
+        <span>@FieldLabel(field.Name)</span>
+        <small>@TypeLabel</small>
+    </div>
+}
+else if (Node is LiteralExpression)
+{
+    <div class="expression-node expression-node--leaf @TypeClass">
+        <span class="expression-node-icon" aria-hidden="true">@TypeIcon</span>
+        <code>@FilterExpressionParser.Format(Node)</code>
+        <small>@TypeLabel</small>
+    </div>
+}
+
+@code {
+    [Parameter, EditorRequired] public ExpressionNode Node { get; set; } = null!;
+
+    private ExpressionValueType? NodeType => FilterExpressionValidator.InferType(Node);
+    private string TypeClass => FilterExpressionCatalog.TypeCssClass(NodeType);
+    private string TypeLabel => NodeType is ExpressionValueType type ? FilterExpressionCatalog.TypeLabel(type) : "Unknown";
+    private string TypeIcon => NodeType is ExpressionValueType type ? FilterExpressionCatalog.TypeIcon(type) : "?";
+
+    private static string FieldLabel(string name) =>
+        FilterExpressionCatalog.TryGetField(name, out var field) ? field.Label : name;
+
+    private static string FunctionLabel(string name) =>
+        FilterExpressionCatalog.TryGetFunction(name, out var function) ? function.Label : name;
+}
