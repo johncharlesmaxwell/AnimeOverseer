@@ -3,19 +3,20 @@
 
 @if (Node is FunctionExpression function)
 {
-    <div class="expression-node expression-node--function @TypeClass">
-        <div class="expression-node-heading">
+    <div class="expression-node expression-node--function @TypeClass @(IsSelected ? "expression-node--selected" : "")">
+        <button type="button" class="expression-node-heading expression-node-selector" aria-pressed="@IsSelected" @onclick="SelectNode">
             <span class="expression-node-icon" aria-hidden="true">@TypeIcon</span>
             <strong>@FunctionLabel(function.Name)</strong>
             <small>@TypeLabel</small>
-        </div>
+        </button>
         <ol class="expression-node-arguments">
             @for (var index = 0; index < function.Arguments.Count; index++)
             {
                 var argument = function.Arguments[index];
+                var childPath = FilterExpressionTreeEditor.ChildPath(Path, index);
                 <li>
-                    <span class="expression-argument-label">Argument @(index + 1)</span>
-                    <ExpressionNodeView Node="argument" />
+                    <span class="expression-argument-label">@ArgumentLabel(function.Name, index)</span>
+                    <ExpressionNodeView Node="argument" Path="@childPath" SelectedPath="@SelectedPath" OnSelect="@OnSelect" />
                 </li>
             }
         </ol>
@@ -23,25 +24,31 @@
 }
 else if (Node is FieldExpression field)
 {
-    <div class="expression-node expression-node--leaf @TypeClass">
+    <button type="button" class="expression-node expression-node--leaf expression-node-selector @TypeClass @(IsSelected ? "expression-node--selected" : "")"
+            aria-pressed="@IsSelected" @onclick="SelectNode">
         <span class="expression-node-icon" aria-hidden="true">@TypeIcon</span>
         <span>@FieldLabel(field.Name)</span>
         <small>@TypeLabel</small>
-    </div>
+    </button>
 }
 else if (Node is LiteralExpression)
 {
-    <div class="expression-node expression-node--leaf @TypeClass">
+    <button type="button" class="expression-node expression-node--leaf expression-node-selector @TypeClass @(IsSelected ? "expression-node--selected" : "")"
+            aria-pressed="@IsSelected" @onclick="SelectNode">
         <span class="expression-node-icon" aria-hidden="true">@TypeIcon</span>
         <code>@FilterExpressionParser.Format(Node)</code>
         <small>@TypeLabel</small>
-    </div>
+    </button>
 }
 
 @code {
     [Parameter, EditorRequired] public ExpressionNode Node { get; set; } = null!;
+    [Parameter] public string Path { get; set; } = string.Empty;
+    [Parameter] public string SelectedPath { get; set; } = string.Empty;
+    [Parameter] public EventCallback<string> OnSelect { get; set; }
 
     private ExpressionValueType? NodeType => FilterExpressionValidator.InferType(Node);
+    private bool IsSelected => Path == SelectedPath;
     private string TypeClass => FilterExpressionCatalog.TypeCssClass(NodeType);
     private string TypeLabel => NodeType is ExpressionValueType type ? FilterExpressionCatalog.TypeLabel(type) : "Unknown";
     private string TypeIcon => NodeType is ExpressionValueType type ? FilterExpressionCatalog.TypeIcon(type) : "?";
@@ -51,4 +58,21 @@ else if (Node is LiteralExpression)
 
     private static string FunctionLabel(string name) =>
         FilterExpressionCatalog.TryGetFunction(name, out var function) ? function.Label : name;
+
+    private Task SelectNode() => OnSelect.InvokeAsync(Path);
+
+    private static string ArgumentLabel(string functionName, int index) => functionName.ToLowerInvariant() switch
+    {
+        "if" => index switch { 0 => "Condition", 1 => "When true", _ => "When false" },
+        "replace" => index switch { 0 => "Text", 1 => "Find", _ => "Replace with" },
+        "substring" or "slice" => index switch { 0 => "Text", 1 => "Start", _ => "Length / end" },
+        "contains" or "startswith" or "endswith" or "indexof" or "lastindexof" => index == 0 ? "Value" : "Search for",
+        "addtotime" or "subtractfromtime" => index switch { 0 => "Date", 1 => "Amount", _ => "Unit" },
+        "formatdatetime" => index == 0 ? "Date" : "Format",
+        "join" or "split" => index == 0 ? "Value" : "Separator",
+        "equals" or "greater" or "greaterorequals" or "less" or "lessorequals" => index == 0 ? "Left value" : "Right value",
+        "div" => index == 0 ? "Dividend" : "Divisor",
+        "sub" => index == 0 ? "Starting value" : "Subtract",
+        _ => $"Argument {index + 1}"
+    };
 }

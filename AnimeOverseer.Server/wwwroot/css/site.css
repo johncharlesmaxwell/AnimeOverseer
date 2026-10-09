@@ -319,6 +319,10 @@ img {
 .formula-catalog > input { position: sticky; z-index: 2; top: 0; width: 100%; background: var(--bg-secondary); }
 .formula-token-list--vertical { display: grid; gap: .3rem; }
 .formula-token-list .expression-palette-item { display: grid; grid-template-columns: 1.55rem minmax(0, 1fr) auto; width: 100%; min-width: 0; align-items: center; gap: .45rem; padding: .42rem .5rem; border-left-width: 3px; text-align: left; }
+.formula-value-shortcuts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .3rem; margin-top: .45rem; }
+.formula-value-shortcuts button { padding: .38rem .45rem; color: var(--text-secondary); background: var(--bg-tertiary); border: 1px solid var(--border-color); border-radius: 4px; cursor: pointer; }
+.formula-value-shortcuts button:hover:not(:disabled) { color: var(--text-primary); border-color: var(--accent); }
+.formula-value-shortcuts button:disabled { cursor: not-allowed; opacity: .38; }
 .expression-palette-item > span:nth-child(2) { min-width: 0; }
 .expression-palette-item strong, .expression-palette-item small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .expression-palette-item small { color: var(--text-muted); font-size: .68rem; }
@@ -329,11 +333,24 @@ img {
 .expression-canvas--drop-ready { background: color-mix(in srgb, var(--accent) 7%, var(--bg-primary)); border-color: var(--accent); }
 .expression-node { color: var(--text-primary); border: 1px solid var(--border-color); border-left-width: 4px; border-radius: var(--radius-sm); }
 .expression-node-heading, .expression-node--leaf { display: flex; min-width: 0; align-items: center; gap: .45rem; padding: .48rem .55rem; }
+.expression-node-selector { width: 100%; color: inherit; background: transparent; border-top: 0; border-right: 0; border-bottom: 0; text-align: left; cursor: pointer; }
+.expression-node-heading.expression-node-selector { border-left: 0; }
+.expression-node-selector:hover { background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.expression-node--selected { outline: 2px solid var(--accent); outline-offset: 2px; }
+.expression-node-selector:focus-visible { outline: 2px solid var(--accent-light); outline-offset: 2px; }
 .expression-node-heading small, .expression-node--leaf small { margin-left: auto; white-space: nowrap; }
 .expression-node-arguments { display: grid; gap: .45rem; padding: 0 .55rem .55rem 2rem; list-style: none; counter-reset: expression-argument; }
 .expression-node-arguments > li { position: relative; min-width: 0; }
 .expression-argument-label { display: block; margin: 0 0 .15rem .15rem; color: var(--text-muted); font-size: .63rem; text-transform: uppercase; letter-spacing: .04em; }
 .expression-node-arguments .expression-node { background: color-mix(in srgb, var(--bg-secondary) 70%, transparent); }
+.expression-selection-editor { margin-top: .65rem; padding: .65rem; background: color-mix(in srgb, var(--accent) 5%, var(--bg-primary)); border: 1px solid var(--border-color); border-radius: var(--radius-sm); }
+.expression-selection-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: .6rem; }
+.expression-selection-heading strong, .expression-selection-heading small { display: block; }
+.expression-selection-heading small, .expression-selection-editor > p { margin-top: .1rem; color: var(--text-muted); font-size: .7rem; }
+.expression-selection-actions { display: flex; gap: .25rem; }
+.expression-selection-editor label { display: block; margin: .55rem 0 .2rem; color: var(--text-secondary); font-size: .7rem; }
+.expression-selection-editor input, .expression-selection-editor select { width: 100%; }
+.expression-add-argument { margin-top: .55rem; }
 .formula-source-summary { display: grid; gap: .2rem; margin-top: .65rem; }
 .formula-source-summary span { color: var(--text-muted); font-size: .68rem; text-transform: uppercase; letter-spacing: .04em; }
 .formula-source-summary code { overflow-wrap: anywhere; padding: .45rem; color: var(--accent-light); background: var(--bg-primary); border-radius: 4px; }

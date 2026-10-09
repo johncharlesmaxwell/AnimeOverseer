@@ -140,6 +140,35 @@ public sealed class FilterExpressionTests
     }
 
     [Fact]
+    public void Formula_tree_editor_replaces_a_nested_argument_without_mutating_the_source_tree()
+    {
+        var original = FilterExpressionParser.Parse("div(mul(episodes, duration), 60)").Root!;
+
+        var replaced = FilterExpressionTreeEditor.TryReplace(
+            original, "0/1", new FieldExpression { Name = "rating" }, out var updated);
+
+        Assert.True(replaced);
+        Assert.Equal("div(mul(episodes, duration), 60)", FilterExpressionParser.Format(original));
+        Assert.Equal("div(mul(episodes, rating), 60)", FilterExpressionParser.Format(updated));
+    }
+
+    [Fact]
+    public void Formula_tree_editor_adds_removes_and_reorders_collection_items()
+    {
+        var original = FilterExpressionParser.Parse("createArray(\"Action\", \"Adventure\")").Root!;
+
+        Assert.True(FilterExpressionTreeEditor.TryAppendArgument(
+            original, "", new LiteralExpression { ValueType = ExpressionValueType.String, Value = "Comedy" }, out var added));
+        Assert.True(FilterExpressionTreeEditor.TryMoveArgument(added, "2", -1, out var moved, out var movedPath));
+        Assert.True(FilterExpressionTreeEditor.TryRemoveArgument(moved, movedPath, out var removed));
+
+        Assert.Equal("createArray(\"Action\", \"Adventure\", \"Comedy\")", FilterExpressionParser.Format(added));
+        Assert.Equal("1", movedPath);
+        Assert.Equal("createArray(\"Action\", \"Comedy\", \"Adventure\")", FilterExpressionParser.Format(moved));
+        Assert.Equal("createArray(\"Action\", \"Adventure\")", FilterExpressionParser.Format(removed));
+    }
+
+    [Fact]
     public void Rejects_excessive_expression_depth()
     {
         var source = "title";

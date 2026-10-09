@@ -70,13 +70,24 @@
                                @bind="catalogSearch" @bind:event="oninput" />
 
                         <div class="formula-dialog-section">
+                            <strong>Values</strong>
+                            <div class="formula-value-shortcuts" aria-label="Insert a value">
+                                <button type="button" disabled="@(!CanReplaceSelectedWith(TextLiteral()))" @onclick="() => ReplaceSelected(TextLiteral())">Text</button>
+                                <button type="button" disabled="@(!CanReplaceSelectedWith(NumberLiteral()))" @onclick="() => ReplaceSelected(NumberLiteral())">Number</button>
+                                <button type="button" disabled="@(!CanReplaceSelectedWith(BooleanLiteral()))" @onclick="() => ReplaceSelected(BooleanLiteral())">True/false</button>
+                                <button type="button" disabled="@(!CanReplaceSelectedWith(EmptyList()))" @onclick="() => ReplaceSelected(EmptyList())">List</button>
+                            </div>
+                        </div>
+
+                        <div class="formula-dialog-section">
                             <strong>Anime fields</strong>
                             <div class="formula-token-list formula-token-list--vertical">
                                 @foreach (var field in FilteredFields)
                                 {
+                                    var canUseField = CanReplaceSelectedWith(new FieldExpression { Name = field.Name });
                                     <button type="button" class="expression-palette-item @FilterExpressionCatalog.TypeCssClass(field.Type)"
-                                            draggable="true" @ondragstart="() => BeginDragField(field.Name)" @onclick="() => SetField(field.Name)"
-                                            title="@field.Description">
+                                            disabled="@(!canUseField)" draggable="@canUseField" @ondragstart="() => BeginDragField(field.Name)" @onclick="() => SetField(field.Name)"
+                                            title="@(canUseField ? field.Description : $"{field.Description}. It is not compatible with the selected slot.")">
                                         <span class="expression-node-icon" aria-hidden="true">@FilterExpressionCatalog.TypeIcon(field.Type)</span>
                                         <span><strong>@field.Label</strong><small>@field.Description</small></span>
                                         <em>@FilterExpressionCatalog.TypeLabel(field.Type)</em>
@@ -107,20 +118,66 @@
 
                     <main class="formula-workspace">
                         <div class="formula-section-heading">
-                            <div><strong>Your formula</strong><small>Click an item to insert it, or drag it onto this canvas.</small></div>
+                            <div><strong>Your formula</strong><small>Select a node, then replace or wrap it from the palette.</small></div>
                             <button type="button" class="btn btn-small" disabled="@(undoDrafts.Count == 0)" @onclick="Undo">Undo</button>
                         </div>
                         <div class="expression-canvas @(draggedKind is null ? "" : "expression-canvas--drop-ready")"
                              @ondragover:preventDefault @ondrop="DropOnCanvas">
                             @if (CurrentNode is ExpressionNode root)
                             {
-                                <ExpressionNodeView Node="root" />
+                                <ExpressionNodeView Node="root" SelectedPath="@selectedPath" OnSelect="SelectNode" />
                             }
                             else
                             {
                                 <p>Choose a field or example to begin.</p>
                             }
                         </div>
+                        @if (SelectedNode is ExpressionNode selected)
+                        {
+                            <section class="expression-selection-editor" aria-labelledby="selected-node-heading">
+                                <div class="expression-selection-heading">
+                                    <div>
+                                        <strong id="selected-node-heading">Selected: @SelectedNodeLabel(selected)</strong>
+                                        <small>Palette choices now apply here.</small>
+                                    </div>
+                                    <div class="expression-selection-actions">
+                                        <button type="button" class="btn btn-small" disabled="@(!CanMoveSelected(-1))" title="Move argument up" aria-label="Move selected argument up" @onclick="() => MoveSelected(-1)">↑</button>
+                                        <button type="button" class="btn btn-small" disabled="@(!CanMoveSelected(1))" title="Move argument down" aria-label="Move selected argument down" @onclick="() => MoveSelected(1)">↓</button>
+                                        <button type="button" class="btn btn-small" disabled="@(!CanRemoveSelected())" @onclick="RemoveSelected">Remove</button>
+                                    </div>
+                                </div>
+
+                                @if (selected is LiteralExpression literal)
+                                {
+                                    <label for="@LiteralEditorId">Value</label>
+                                    @if (literal.ValueType == ExpressionValueType.Boolean)
+                                    {
+                                        <select id="@LiteralEditorId" class="form-select" value="@literal.Value" @onchange="ChangeLiteralValue">
+                                            <option value="False">False</option>
+                                            <option value="True">True</option>
+                                        </select>
+                                    }
+                                    else if (literal.ValueType == ExpressionValueType.Null)
+                                    {
+                                        <p class="formula-preview-muted">This is an empty value. Choose another value or field from the palette to replace it.</p>
+                                    }
+                                    else
+                                    {
+                                        <input id="@LiteralEditorId" class="form-input" type="@(literal.ValueType == ExpressionValueType.Number ? "number" : "text")"
+                                               step="@(literal.ValueType == ExpressionValueType.Number ? "any" : null)" value="@literal.Value" @onchange="ChangeLiteralValue" />
+                                    }
+                                }
+                                else
+                                {
+                                    <p>Choose a compatible field or value to replace this node, or choose a function to wrap it.</p>
+                                }
+
+                                @if (selected is FunctionExpression selectedFunction && CanAddArgument(selectedFunction))
+                                {
+                                    <button type="button" class="btn btn-small expression-add-argument" @onclick="AddArgument">+ Add argument</button>
+                                }
+                            </section>
+                        }
                         <div class="formula-source-summary">
                             <span>Generated formula</span><code>@InnerExpression()</code>
                         </div>
@@ -220,6 +277,7 @@
     private readonly string SearchId = $"formula-search-{Guid.NewGuid():N}";
     private readonly string PreviewId = $"formula-preview-{Guid.NewGuid():N}";
     private readonly string CodeId = $"formula-code-{Guid.NewGuid():N}";
+    private readonly string LiteralEditorId = $"formula-literal-{Guid.NewGuid():N}";
     private readonly Stack<string> undoDrafts = new();
     private readonly List<Anime> previewAnimes = [];
     private bool isOpen;
@@ -227,6 +285,7 @@
     private string editorMode = "guided";
     private string draft = string.Empty;
     private string catalogSearch = string.Empty;
+    private string selectedPath = string.Empty;
     private string? draggedKind;
     private string? draggedValue;
     private int previewAnimeId;
@@ -252,6 +311,15 @@
     }
 
     private ExpressionValueType? CurrentType => CurrentNode is ExpressionNode node ? FilterExpressionValidator.InferType(node) : null;
+    private ExpressionNode? SelectedNode
+    {
+        get
+        {
+            if (CurrentNode is not ExpressionNode root) return null;
+            return FilterExpressionTreeEditor.TryGet(root, selectedPath, out var selected) ? selected : root;
+        }
+    }
+    private ExpressionValueType? SelectedType => SelectedNode is ExpressionNode node ? FilterExpressionValidator.InferType(node) : null;
     private Anime? SelectedPreviewAnime => previewAnimes.FirstOrDefault(anime => anime.Id == previewAnimeId) ?? previewAnimes.FirstOrDefault();
 
     private IReadOnlyList<ExpressionFieldDefinition> ReferencedFields => CurrentNode is null
@@ -267,7 +335,7 @@
 
     private static bool IsFormula(string value) => value.TrimStart().StartsWith("{{", StringComparison.Ordinal);
     private async Task ChangeValue(ChangeEventArgs args) => await ValueChanged.InvokeAsync(args.Value?.ToString() ?? string.Empty);
-    private void SetGuidedMode() => editorMode = "guided";
+    private void SetGuidedMode() { editorMode = "guided"; selectedPath = string.Empty; }
     private void SetCodeMode() => editorMode = "code";
 
     private async Task OpenDialogAsync()
@@ -275,6 +343,7 @@
         draft = IsFormula(Value) ? Value : string.IsNullOrWhiteSpace(Value) ? "{{title}}" : $"{{{{\"{Escape(Value)}\"}}}}";
         editorMode = DraftError is null ? "guided" : "code";
         catalogSearch = string.Empty;
+        selectedPath = string.Empty;
         undoDrafts.Clear();
         isOpen = true;
         previewLoading = true;
@@ -302,26 +371,45 @@
         }
     }
 
-    private void ChangeDraft(ChangeEventArgs args) => draft = args.Value?.ToString() ?? string.Empty;
+    private void ChangeDraft(ChangeEventArgs args)
+    {
+        draft = args.Value?.ToString() ?? string.Empty;
+        selectedPath = string.Empty;
+    }
 
-    private void SetField(string value) => SetDraft($"{{{{{value}}}}}");
-    private void UseExample(ExpressionExampleDefinition example) => SetDraft($"{{{{{example.Source}}}}}");
+    private void SetField(string value) => ReplaceSelected(new FieldExpression { Name = value });
+    private void UseExample(ExpressionExampleDefinition example)
+    {
+        selectedPath = string.Empty;
+        SetDraft($"{{{{{example.Source}}}}}");
+    }
 
     private void ApplyFunction(ExpressionFunctionDefinition function)
     {
         if (!CanApply(function)) return;
-        SetDraft($"{{{{{function.ApplyTo(InnerExpression())}}}}}");
+        var selected = SelectedNode;
+        var source = function.ApplyTo(selected is null ? "title" : FilterExpressionParser.Format(selected));
+        var parsed = FilterExpressionParser.Parse(source);
+        if (parsed.IsValid) ReplaceSelected(parsed.Root!);
     }
 
     private bool CanApply(ExpressionFunctionDefinition function) =>
-        !function.UsesCurrentValue || DraftError is null && function.CanApplyTo(CurrentType);
+        DraftError is null && (!function.UsesCurrentValue || function.CanApplyTo(SelectedType)) &&
+        FunctionCandidate(function) is ExpressionNode candidate && CanReplaceSelectedWith(candidate);
 
     private string FunctionTypeClass(ExpressionFunctionDefinition function)
     {
         if (!CanApply(function)) return "expression-type--empty";
-        var parsed = FilterExpressionParser.Parse(function.ApplyTo(InnerExpression()));
-        var type = parsed.IsValid ? FilterExpressionValidator.InferType(parsed.Root!) : null;
+        var type = FunctionCandidate(function) is ExpressionNode candidate ? FilterExpressionValidator.InferType(candidate) : null;
         return FilterExpressionCatalog.TypeCssClass(type);
+    }
+
+    private ExpressionNode? FunctionCandidate(ExpressionFunctionDefinition function)
+    {
+        var selected = SelectedNode;
+        if (function.UsesCurrentValue && selected is null) return null;
+        var parsed = FilterExpressionParser.Parse(function.ApplyTo(selected is null ? "title" : FilterExpressionParser.Format(selected)));
+        return parsed.IsValid ? parsed.Root : null;
     }
 
     private void SetDraft(string value)
@@ -333,8 +421,114 @@
 
     private void Undo()
     {
-        if (undoDrafts.TryPop(out var previous)) draft = previous;
+        if (undoDrafts.TryPop(out var previous))
+        {
+            draft = previous;
+            selectedPath = string.Empty;
+        }
     }
+
+    private void SelectNode(string path) => selectedPath = path;
+
+    private bool CanReplaceSelectedWith(ExpressionNode replacement)
+    {
+        if (CurrentNode is not ExpressionNode root ||
+            !FilterExpressionTreeEditor.TryReplace(root, selectedPath, replacement, out var updated)) return false;
+        return FilterExpressionValidator.Validate(updated).Count == 0;
+    }
+
+    private void ReplaceSelected(ExpressionNode replacement)
+    {
+        if (CurrentNode is not ExpressionNode root ||
+            !FilterExpressionTreeEditor.TryReplace(root, selectedPath, replacement, out var updated) ||
+            FilterExpressionValidator.Validate(updated).Count > 0) return;
+        SetDraftFromRoot(updated);
+    }
+
+    private void ChangeLiteralValue(ChangeEventArgs args)
+    {
+        if (SelectedNode is not LiteralExpression literal) return;
+        var value = args.Value?.ToString() ?? string.Empty;
+        if (literal.ValueType == ExpressionValueType.Number &&
+            !decimal.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out _)) return;
+        ReplaceSelected(new LiteralExpression { ValueType = literal.ValueType, Value = value });
+    }
+
+    private bool CanAddArgument(FunctionExpression function)
+    {
+        if (!FilterExpressionCatalog.TryGetFunction(function.Name, out var definition) ||
+            function.Arguments.Count >= definition.MaximumArguments || CurrentNode is not ExpressionNode root) return false;
+        return FilterExpressionTreeEditor.TryAppendArgument(root, selectedPath, DefaultAdditionalArgument(function), out var updated) &&
+            FilterExpressionValidator.Validate(updated).Count == 0;
+    }
+
+    private void AddArgument()
+    {
+        if (SelectedNode is not FunctionExpression function || !CanAddArgument(function) || CurrentNode is not ExpressionNode root) return;
+        var newIndex = function.Arguments.Count;
+        if (!FilterExpressionTreeEditor.TryAppendArgument(root, selectedPath, DefaultAdditionalArgument(function), out var updated)) return;
+        SetDraftFromRoot(updated);
+        selectedPath = FilterExpressionTreeEditor.ChildPath(selectedPath, newIndex);
+    }
+
+    private bool CanRemoveSelected()
+    {
+        if (CurrentNode is not ExpressionNode root ||
+            !FilterExpressionTreeEditor.TryGetParent(root, selectedPath, out var parent, out _) ||
+            !FilterExpressionCatalog.TryGetFunction(parent.Name, out var definition) ||
+            parent.Arguments.Count <= definition.MinimumArguments) return false;
+        return FilterExpressionTreeEditor.TryRemoveArgument(root, selectedPath, out var updated) &&
+            FilterExpressionValidator.Validate(updated).Count == 0;
+    }
+
+    private void RemoveSelected()
+    {
+        if (!CanRemoveSelected() || CurrentNode is not ExpressionNode root ||
+            !FilterExpressionTreeEditor.TryRemoveArgument(root, selectedPath, out var updated)) return;
+        selectedPath = ParentPath(selectedPath);
+        SetDraftFromRoot(updated);
+    }
+
+    private bool CanMoveSelected(int offset)
+    {
+        if (CurrentNode is not ExpressionNode root) return false;
+        return FilterExpressionTreeEditor.TryMoveArgument(root, selectedPath, offset, out var updated, out _) &&
+            FilterExpressionValidator.Validate(updated).Count == 0;
+    }
+
+    private void MoveSelected(int offset)
+    {
+        if (CurrentNode is not ExpressionNode root ||
+            !FilterExpressionTreeEditor.TryMoveArgument(root, selectedPath, offset, out var updated, out var newPath) ||
+            FilterExpressionValidator.Validate(updated).Count > 0) return;
+        SetDraftFromRoot(updated);
+        selectedPath = newPath;
+    }
+
+    private void SetDraftFromRoot(ExpressionNode root) => SetDraft($"{{{{{FilterExpressionParser.Format(root)}}}}}");
+
+    private static ExpressionNode DefaultAdditionalArgument(FunctionExpression function) => function.Arguments.Count > 0
+        ? FilterExpressionTreeEditor.Clone(function.Arguments[^1])
+        : TextLiteral();
+
+    private static LiteralExpression TextLiteral() => new() { ValueType = ExpressionValueType.String, Value = string.Empty };
+    private static LiteralExpression NumberLiteral() => new() { ValueType = ExpressionValueType.Number, Value = "0" };
+    private static LiteralExpression BooleanLiteral() => new() { ValueType = ExpressionValueType.Boolean, Value = "False" };
+    private static FunctionExpression EmptyList() => new() { Name = "createArray", Arguments = [TextLiteral()] };
+
+    private static string ParentPath(string path)
+    {
+        var separator = path.LastIndexOf('/');
+        return separator < 0 ? string.Empty : path[..separator];
+    }
+
+    private static string SelectedNodeLabel(ExpressionNode node) => node switch
+    {
+        FieldExpression field when FilterExpressionCatalog.TryGetField(field.Name, out var definition) => definition.Label,
+        FunctionExpression function when FilterExpressionCatalog.TryGetFunction(function.Name, out var definition) => definition.Label,
+        LiteralExpression literal => $"{FilterExpressionCatalog.TypeLabel(literal.ValueType)} value",
+        _ => "formula node"
+    };
 
     private void BeginDragField(string name) { draggedKind = "field"; draggedValue = name; }
     private void BeginDragFunction(string name) { draggedKind = "function"; draggedValue = name; }
