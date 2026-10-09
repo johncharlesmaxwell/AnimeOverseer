@@ -69,6 +69,7 @@ else if (Node is LiteralExpression)
         "contains" or "startswith" or "endswith" or "indexof" or "lastindexof" => index == 0 ? "Value" : "Search for",
         "addtotime" or "subtractfromtime" => index switch { 0 => "Date", 1 => "Amount", _ => "Unit" },
         "formatdatetime" => index == 0 ? "Date" : "Format",
+        "string" => index == 0 ? "Value" : "Format",
         "join" or "split" => index == 0 ? "Value" : "Separator",
         "equals" or "greater" or "greaterorequals" or "less" or "lessorequals" => index == 0 ? "Left value" : "Right value",
         "div" => index == 0 ? "Dividend" : "Divisor",

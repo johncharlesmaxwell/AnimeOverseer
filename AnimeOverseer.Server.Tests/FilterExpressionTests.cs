@@ -57,6 +57,30 @@ public sealed class FilterExpressionTests
     }
 
     [Fact]
+    public void String_conversion_supports_invariant_number_and_date_formats()
+    {
+        var anime = new Anime { Title = "Example", Rating = 7.1m, StartDate = new DateTime(2026, 4, 9) };
+
+        var rating = Evaluate("string(rating, \"0.00\")", anime);
+        var date = Evaluate("string(startDate, \"yyyy-MM-dd\")", anime);
+        var legacy = Evaluate("string(rating)", anime);
+
+        Assert.Equal("7.10", rating.Value);
+        Assert.Equal("2026-04-09", date.Value);
+        Assert.Equal("7.1", legacy.Value);
+    }
+
+    [Fact]
+    public void String_conversion_rejects_an_invalid_literal_format()
+    {
+        var parsed = FilterExpressionParser.Parse("string(startDate, \"%\")");
+
+        var diagnostic = Assert.Single(FilterExpressionValidator.Validate(parsed.Root!));
+
+        Assert.Contains("valid format", diagnostic.Message);
+    }
+
+    [Fact]
     public void Computed_left_operand_filters_anime()
     {
         var matching = new Anime

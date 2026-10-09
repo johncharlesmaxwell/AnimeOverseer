@@ -120,6 +120,8 @@ length(genres) >= 3
 div(mul(episodes, duration), 60) < 10
 length(intersection(genres, createArray("Action", "Adventure"))) >= 2
 dateDifference(startDate, endDate) > 90
+string(rating, "0.00") = "7.10"
+string(startDate, "yyyy-MM-dd") = "2026-04-09"
 ```
 
 Available expression fields include catalogue text, type, status, season, year, episodes, duration, rating, provider IDs, dates, genres, themes, demographics, title aliases, image count, image availability, title-review flags, and library status.
@@ -128,7 +130,7 @@ Supported function groups include:
 
 - Text: `toLower`, `toUpper`, `trim`, `concat`, `replace`, `substring`, `slice`, `indexOf`, `lastIndexOf`, `startsWith`, `endsWith`, and `length`.
 - Null and conditional: `empty`, `coalesce`, `if`, comparisons, `and`, `or`, and `not`.
-- Conversion and math: `string`, `int`, `float`, `decimal`, `bool`, `add`, `sub`, `mul`, `div`, `mod`, `min`, and `max`.
+- Conversion and math: `string`, `int`, `float`, `decimal`, `bool`, `add`, `sub`, `mul`, `div`, `mod`, `min`, and `max`. `string(value, format)` accepts invariant-culture numeric and date format strings; the format remains optional for existing formulas.
 - Date and time: `utcNow`, `addDays`, `addToTime`, `subtractFromTime`, `dateDifference`, day-part functions, start-of-period functions, formatting, and parsing.
 - Collections: `array`, `createArray`, `contains`, `intersection`, `union`, `first`, `last`, `join`, `split`, and `sort`.
 

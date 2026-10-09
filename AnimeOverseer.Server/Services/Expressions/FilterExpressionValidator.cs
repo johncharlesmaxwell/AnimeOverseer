@@ -132,6 +132,7 @@ public static class FilterExpressionValidator
                 else if (function.Arguments.Count < functionDefinition.MinimumArguments || function.Arguments.Count > functionDefinition.MaximumArguments)
                     diagnostics.Add(new(0, $"{function.Name} expects {(functionDefinition.MinimumArguments == functionDefinition.MaximumArguments ? functionDefinition.MinimumArguments.ToString() : $"{functionDefinition.MinimumArguments}-{functionDefinition.MaximumArguments}")} arguments."));
                 var argumentTypes = function.Arguments.Select(argument => InferType(argument, diagnostics)).ToArray();
+                ValidateLiteralFormat(function, argumentTypes, diagnostics);
                 return ValidateFunctionTypes(function.Name, argumentTypes, diagnostics);
             default:
                 diagnostics.Add(new(0, "Unknown expression node."));
@@ -182,6 +183,7 @@ public static class FilterExpressionValidator
         else if (name is "dayofmonth" or "dayofweek" or "dayofyear" or "startofday" or "startofmonth") Require(0, ExpressionValueType.DateTime);
         else if (name == "formatdatetime") { Require(0, ExpressionValueType.DateTime); Require(1, ExpressionValueType.String); }
         else if (name == "parsedatetime") Require(0, ExpressionValueType.String);
+        else if (name == "string" && args.Length > 1) Require(1, ExpressionValueType.String);
         else if (name == "contains") { Require(0, ExpressionValueType.String, ExpressionValueType.StringCollection); Require(1, ExpressionValueType.String); }
         else if (name is "intersection" or "union" or "sort") for (var index = 0; index < args.Length; index++) Require(index, ExpressionValueType.StringCollection);
         else if (name is "first" or "last") Require(0, ExpressionValueType.String, ExpressionValueType.StringCollection);
@@ -201,6 +203,26 @@ public static class FilterExpressionValidator
             "first" or "last" or "tolower" or "toupper" or "trim" or "concat" or "replace" or "substring" or "slice" or "string" or "formatdatetime" or "join" => ExpressionValueType.String,
             _ => ExpressionValueType.Null
         };
+    }
+
+    private static void ValidateLiteralFormat(FunctionExpression function, ExpressionValueType[] argumentTypes, List<ExpressionDiagnostic> diagnostics)
+    {
+        if (!function.Name.Equals("string", StringComparison.OrdinalIgnoreCase) || function.Arguments.Count != 2 ||
+            function.Arguments[1] is not LiteralExpression { ValueType: ExpressionValueType.String } literal ||
+            argumentTypes.Length == 0 || string.IsNullOrEmpty(literal.Value)) return;
+        try
+        {
+            _ = argumentTypes[0] switch
+            {
+                ExpressionValueType.Number => 0m.ToString(literal.Value, System.Globalization.CultureInfo.InvariantCulture),
+                ExpressionValueType.DateTime => DateTime.UnixEpoch.ToString(literal.Value, System.Globalization.CultureInfo.InvariantCulture),
+                _ => string.Empty
+            };
+        }
+        catch (FormatException)
+        {
+            diagnostics.Add(new(0, $"'{literal.Value}' is not a valid format for {TypeLabel(argumentTypes[0])}."));
+        }
     }
 
     private static string TypeLabel(ExpressionValueType type) => type switch

@@ -116,7 +116,7 @@ public static class FilterExpressionEvaluator
             "not" => Boolean(!RequireBoolean(args, 0, name)),
             "startswith" => Boolean(RequireString(args, 0, name).StartsWith(RequireString(args, 1, name), StringComparison.OrdinalIgnoreCase)),
             "endswith" => Boolean(RequireString(args, 0, name).EndsWith(RequireString(args, 1, name), StringComparison.OrdinalIgnoreCase)),
-            "string" => String(AsString(RequireArg(args, 0, name))),
+            "string" => FormatString(args),
             "int" or "float" or "decimal" => Number(RequireNumber(args, 0, name)),
             "bool" => Boolean(AsBoolean(RequireArg(args, 0, name))),
             "add" => Number(RequireNumber(args, 0, name) + RequireNumber(args, 1, name)),
@@ -209,6 +209,23 @@ public static class FilterExpressionEvaluator
     }
     private static ExpressionValue StartOfMonth(ExpressionValue[] args) { var date = RequireDate(args, 0, "startOfMonth"); return Date(new DateTime(date.Year, date.Month, 1, 0, 0, 0, date.Kind)); }
     private static ExpressionValue ParseDate(ExpressionValue[] args) => System.DateTime.TryParse(RequireString(args, 0, "parseDateTime"), CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var date) ? Date(date) : throw new ExpressionEvaluationException("Invalid date.");
+    private static ExpressionValue FormatString(ExpressionValue[] args)
+    {
+        var value = RequireArg(args, 0, "string");
+        if (value.IsNull) return String(string.Empty);
+        if (args.Length == 1) return String(AsString(value));
+        var format = RequireString(args, 1, "string");
+        try
+        {
+            return String(value.Value is IFormattable formattable
+                ? formattable.ToString(string.IsNullOrEmpty(format) ? null : format, CultureInfo.InvariantCulture)
+                : AsString(value));
+        }
+        catch (FormatException)
+        {
+            throw new ExpressionEvaluationException($"'{format}' is not a valid format for {value.Type}.");
+        }
+    }
     private static bool Contains(ExpressionValue[] args)
     {
         var source = RequireArg(args, 0, "contains"); var search = RequireArg(args, 1, "contains");

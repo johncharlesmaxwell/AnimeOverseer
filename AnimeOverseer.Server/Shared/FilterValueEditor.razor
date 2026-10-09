@@ -165,6 +165,31 @@
                                     {
                                         <input id="@LiteralEditorId" class="form-input" type="@(literal.ValueType == ExpressionValueType.Number ? "number" : "text")"
                                                step="@(literal.ValueType == ExpressionValueType.Number ? "any" : null)" value="@literal.Value" @onchange="ChangeLiteralValue" />
+                                        @if (SelectedFormatPresets.Count > 0)
+                                        {
+                                            <div class="expression-format-picker">
+                                                <div class="expression-format-picker-heading">
+                                                    <strong>Format presets</strong>
+                                                    <small>Choose a complete format or build one from parts.</small>
+                                                </div>
+                                                <div class="expression-format-options" aria-label="Format presets">
+                                                    @foreach (var preset in SelectedFormatPresets)
+                                                    {
+                                                        <button type="button" class="@(literal.Value == preset.Value ? "active" : "")" title="@preset.Description"
+                                                                @onclick="() => SetFormat(preset.Value)">
+                                                            <span>@preset.Label</span><code>@(preset.Value.Length == 0 ? "default" : preset.Value)</code>
+                                                        </button>
+                                                    }
+                                                </div>
+                                                <span class="expression-format-parts-label">Add format part</span>
+                                                <div class="expression-format-parts" aria-label="Format parts">
+                                                    @foreach (var part in SelectedFormatParts)
+                                                    {
+                                                        <button type="button" title="@part.Description" @onclick="() => AppendFormatPart(part.Value)"><code>@part.Label</code></button>
+                                                    }
+                                                </div>
+                                            </div>
+                                        }
                                     }
                                 }
                                 else
@@ -280,6 +305,42 @@
     private readonly string LiteralEditorId = $"formula-literal-{Guid.NewGuid():N}";
     private readonly Stack<string> undoDrafts = new();
     private readonly List<Anime> previewAnimes = [];
+    private static readonly IReadOnlyList<FormatChoice> NumberFormatPresets =
+    [
+        new("Default", "", "Use the normal number representation"),
+        new("Whole number", "0", "Always show at least one digit"),
+        new("Two decimals", "0.00", "Always show two decimal places"),
+        new("Grouped", "#,##0", "Use thousands separators"),
+        new("Grouped + decimals", "#,##0.00", "Use thousands separators and two decimal places"),
+        new("Percentage", "0.##%", "Multiply by 100 and add a percent sign"),
+        new("Scientific", "0.###E+0", "Use scientific notation")
+    ];
+    private static readonly IReadOnlyList<FormatChoice> NumberFormatParts =
+    [
+        new("0", "0", "Required digit"), new("#", "#", "Optional digit"),
+        new(".", ".", "Decimal point"), new(",", ",", "Digit grouping"),
+        new("%", "%", "Percentage"), new("‰", "‰", "Per mille"),
+        new("E+0", "E+0", "Scientific exponent")
+    ];
+    private static readonly IReadOnlyList<FormatChoice> DateFormatPresets =
+    [
+        new("Default", "", "Use the normal date representation"),
+        new("ISO date", "yyyy-MM-dd", "Year-month-day"),
+        new("Short friendly", "d MMM yyyy", "Day, abbreviated month, and year"),
+        new("Full date", "dddd, d MMMM yyyy", "Weekday and full date"),
+        new("24-hour time", "HH:mm", "Hours and minutes using a 24-hour clock"),
+        new("Date and time", "yyyy-MM-dd HH:mm", "ISO-style date with hours and minutes")
+    ];
+    private static readonly IReadOnlyList<FormatChoice> DateFormatParts =
+    [
+        new("yyyy", "yyyy", "Four-digit year"), new("yy", "yy", "Two-digit year"),
+        new("MMMM", "MMMM", "Full month name"), new("MMM", "MMM", "Abbreviated month name"), new("MM", "MM", "Two-digit month"),
+        new("dd", "dd", "Two-digit day"), new("ddd", "ddd", "Abbreviated weekday"), new("dddd", "dddd", "Full weekday"),
+        new("HH", "HH", "24-hour clock"), new("hh", "hh", "12-hour clock"),
+        new("mm", "mm", "Minutes"), new("ss", "ss", "Seconds"), new("tt", "tt", "AM or PM"),
+        new("-", "-", "Dash separator"), new("/", "/", "Date separator"), new(":", ":", "Time separator"),
+        new(",", ",", "Comma"), new("space", " ", "Space")
+    ];
     private bool isOpen;
     private bool previewLoading;
     private string editorMode = "guided";
@@ -320,6 +381,28 @@
         }
     }
     private ExpressionValueType? SelectedType => SelectedNode is ExpressionNode node ? FilterExpressionValidator.InferType(node) : null;
+    private ExpressionValueType? SelectedFormatValueType
+    {
+        get
+        {
+            if (CurrentNode is not ExpressionNode root ||
+                !FilterExpressionTreeEditor.TryGetParent(root, selectedPath, out var parent, out var index) ||
+                index != 1 || !parent.Name.Equals("string", StringComparison.OrdinalIgnoreCase) || parent.Arguments.Count == 0) return null;
+            return FilterExpressionValidator.InferType(parent.Arguments[0]);
+        }
+    }
+    private IReadOnlyList<FormatChoice> SelectedFormatPresets => SelectedFormatValueType switch
+    {
+        ExpressionValueType.Number => NumberFormatPresets,
+        ExpressionValueType.DateTime => DateFormatPresets,
+        _ => []
+    };
+    private IReadOnlyList<FormatChoice> SelectedFormatParts => SelectedFormatValueType switch
+    {
+        ExpressionValueType.Number => NumberFormatParts,
+        ExpressionValueType.DateTime => DateFormatParts,
+        _ => []
+    };
     private Anime? SelectedPreviewAnime => previewAnimes.FirstOrDefault(anime => anime.Id == previewAnimeId) ?? previewAnimes.FirstOrDefault();
 
     private IReadOnlyList<ExpressionFieldDefinition> ReferencedFields => CurrentNode is null
@@ -454,6 +537,15 @@
         ReplaceSelected(new LiteralExpression { ValueType = literal.ValueType, Value = value });
     }
 
+    private void SetFormat(string format) =>
+        ReplaceSelected(new LiteralExpression { ValueType = ExpressionValueType.String, Value = format });
+
+    private void AppendFormatPart(string part)
+    {
+        if (SelectedNode is not LiteralExpression { ValueType: ExpressionValueType.String } literal) return;
+        SetFormat((literal.Value ?? string.Empty) + part);
+    }
+
     private bool CanAddArgument(FunctionExpression function)
     {
         if (!FilterExpressionCatalog.TryGetFunction(function.Name, out var definition) ||
@@ -507,9 +599,10 @@
 
     private void SetDraftFromRoot(ExpressionNode root) => SetDraft($"{{{{{FilterExpressionParser.Format(root)}}}}}");
 
-    private static ExpressionNode DefaultAdditionalArgument(FunctionExpression function) => function.Arguments.Count > 0
-        ? FilterExpressionTreeEditor.Clone(function.Arguments[^1])
-        : TextLiteral();
+    private static ExpressionNode DefaultAdditionalArgument(FunctionExpression function) =>
+        function.Name.Equals("string", StringComparison.OrdinalIgnoreCase)
+            ? TextLiteral()
+            : function.Arguments.Count > 0 ? FilterExpressionTreeEditor.Clone(function.Arguments[^1]) : TextLiteral();
 
     private static LiteralExpression TextLiteral() => new() { ValueType = ExpressionValueType.String, Value = string.Empty };
     private static LiteralExpression NumberLiteral() => new() { ValueType = ExpressionValueType.Number, Value = "0" };
@@ -591,4 +684,5 @@
     private static string Escape(string value) => value.Replace("\\", "\\\\").Replace("\"", "\\\"");
 
     private sealed record PreviewResult(bool Success, string Text, ExpressionValueType? Type);
+    private sealed record FormatChoice(string Label, string Value, string Description);
 }

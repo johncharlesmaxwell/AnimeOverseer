@@ -351,6 +351,19 @@ img {
 .expression-selection-editor label { display: block; margin: .55rem 0 .2rem; color: var(--text-secondary); font-size: .7rem; }
 .expression-selection-editor input, .expression-selection-editor select { width: 100%; }
 .expression-add-argument { margin-top: .55rem; }
+.expression-format-picker { margin-top: .65rem; padding-top: .6rem; border-top: 1px solid var(--border-color); }
+.expression-format-picker-heading strong, .expression-format-picker-heading small { display: block; }
+.expression-format-picker-heading small { margin-top: .1rem; color: var(--text-muted); font-size: .68rem; }
+.expression-format-options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .3rem; margin-top: .45rem; }
+.expression-format-options button { display: grid; min-width: 0; gap: .08rem; padding: .38rem .45rem; color: var(--text-secondary); background: var(--bg-tertiary); border: 1px solid var(--border-color); border-radius: 4px; text-align: left; cursor: pointer; }
+.expression-format-options button:hover, .expression-format-options button.active { color: var(--text-primary); border-color: var(--accent); }
+.expression-format-options button.active { background: color-mix(in srgb, var(--accent) 10%, var(--bg-tertiary)); }
+.expression-format-options code { overflow: hidden; color: var(--accent-light); font-size: .68rem; text-overflow: ellipsis; white-space: nowrap; }
+.expression-format-parts-label { display: block; margin-top: .55rem; color: var(--text-muted); font-size: .68rem; }
+.expression-format-parts { display: flex; flex-wrap: wrap; gap: .25rem; margin-top: .25rem; }
+.expression-format-parts button { min-width: 2rem; padding: .25rem .38rem; color: var(--text-primary); background: var(--bg-tertiary); border: 1px solid var(--border-color); border-radius: 4px; cursor: pointer; }
+.expression-format-parts button:hover { border-color: var(--accent); }
+.expression-format-parts code { color: inherit; }
 .formula-source-summary { display: grid; gap: .2rem; margin-top: .65rem; }
 .formula-source-summary span { color: var(--text-muted); font-size: .68rem; text-transform: uppercase; letter-spacing: .04em; }
 .formula-source-summary code { overflow-wrap: anywhere; padding: .45rem; color: var(--accent-light); background: var(--bg-primary); border-radius: 4px; }

@@ -91,7 +91,7 @@ public static class FilterExpressionCatalog
         Function("Logic", "or", "Any are true", "Require any condition", 2, 32, "or({value}, true)", ExpressionValueType.Boolean),
         Function("Logic", "not", "Not", "Invert a condition", 1, 1, "not({value})", ExpressionValueType.Boolean),
 
-        Function("Conversion", "string", "To text", "Convert a value to text", 1, 1, "string({value})"),
+        Function("Conversion", "string", "To formatted text", "Convert a value to text with an optional number or date format", 1, 2, "string({value}, \"\")"),
         Function("Conversion", "int", "To integer", "Convert a value to a whole number", 1, 1, "int({value})"),
         Function("Conversion", "float", "To number", "Convert a value to a number", 1, 1, "float({value})"),
         Function("Conversion", "decimal", "To decimal", "Convert a value to a decimal number", 1, 1, "decimal({value})"),
@@ -135,7 +135,8 @@ public static class FilterExpressionCatalog
         new("Runtime in hours", "Multiply episodes by minutes, then convert to hours.", "div(mul(episodes, duration), 60)"),
         new("Preferred title fallback", "Use the original title when present, otherwise the display title.", "coalesce(originalTitle, title)"),
         new("Matching genre count", "Count Action and Adventure genres attached to an anime.", "length(intersection(genres, createArray(\"Action\", \"Adventure\")))"),
-        new("URL-friendly title", "Lowercase the title and replace spaces with hyphens.", "toLower(replace(title, \" \", \"-\"))")
+        new("URL-friendly title", "Lowercase the title and replace spaces with hyphens.", "toLower(replace(title, \" \", \"-\"))"),
+        new("Formatted rating", "Show a rating with exactly two decimal places.", "string(rating, \"0.00\")")
     ];
 
     private static readonly Dictionary<string, ExpressionFieldDefinition> FieldsByName =
