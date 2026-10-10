@@ -14,9 +14,15 @@
                 if (index > 0) { <div class="group-connector"><button class="logic-pill @(State.TopLevelLogic == GroupLogic.And ? "logic-pill--and" : "logic-pill--or")" @onclick="ToggleTopLogic">@State.TopLevelLogic.ToString().ToUpper()</button></div> }
                 <FilterGroupEditor Group="group" CanRemove="@(State.Groups.Count > 1)" OnRemove="() => RemoveGroup(index)" OnChanged="Notify" AvailableGenres="AvailableGenres" AvailableThemes="AvailableThemes" AvailableDemographics="AvailableDemographics" AllowDynamicExpressions="AllowDynamicExpressions" />
             }
-            @if (State.IsActive && CollectionFilterExpressionResolver.RequiresAnimeContext(State))
+            @if (State.IsActive && ContainsFormula(State))
             {
-                <p class="expression-execution-note">This filter contains an expression that is evaluated in memory, so it may be slower on large catalogues.</p>
+                var inMemory = CollectionFilterExpressionResolver.RequiresAnimeContext(State);
+                <div class="expression-execution-note @(inMemory ? "expression-execution-note--memory" : "expression-execution-note--database")">
+                    <strong>@(inMemory ? "In memory" : "Database only")</strong>
+                    <span>@(inMemory
+                        ? "At least one formula cannot be translated to SQLite. Catalogue rows are loaded before formula evaluation, which may be slower on large catalogues."
+                        : "All formulas are translated to SQLite, so filtering, counts, and paging remain database-backed.")</span>
+                </div>
             }
             <div class="filter-footer"><button class="add-group-btn" @onclick="AddGroup">+ Add Group</button>@if (State.IsActive) { <button class="clear-filters-btn" @onclick="ClearAll">✕ Clear All</button> }</div>
         </div>
@@ -37,4 +43,9 @@
     private async Task AddGroup() { State.Groups.Add(new FilterGroup()); await Notify(); }
     private async Task RemoveGroup(int index) { State.Groups.RemoveAt(index); await Notify(); }
     private async Task ClearAll() { State.Groups = [new FilterGroup()]; State.TopLevelLogic = GroupLogic.And; await Notify(); }
+    private static bool ContainsFormula(FilterState state) => state.Groups.SelectMany(AllConditions).Any(condition =>
+        condition.LeftExpression is not null || condition.RightExpressions.Count > 0 ||
+        condition.EffectiveValues.Any(value => value.Contains("{{", StringComparison.Ordinal)));
+    private static IEnumerable<FilterCondition> AllConditions(FilterGroup group) =>
+        group.Conditions.Concat(group.Subgroups.SelectMany(AllConditions));
 }

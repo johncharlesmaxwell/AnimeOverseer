@@ -53,7 +53,7 @@
                             <FilterValueEditor Value="@ValuesFor(cond)[valueIndex]" ValueChanged="value => ChangeValue(cond, valueIndex, value)"
                                                AllowDynamicExpressions="@UsesExpressionInput(cond.Field)" UseOptionSet="@(cond.LeftExpression is null && IsSelectField(cond.Field))"
                                                UseDatePicker="@(cond.LeftExpression is null && IsDateField(cond.Field))" Placeholder="@PlaceholderFor(cond.Field)"
-                                               Suggestions="@SuggestionsFor(cond)" />
+                                               Suggestions="@SuggestionsFor(cond)" Condition="@cond" ConditionValueIndex="@valueIndex" />
                             @if (ValuesFor(cond).Count > 1) { <button class="condition-remove" @onclick="() => RemoveValue(cond, valueIndex)">✕</button> }
                         </div>
                     }

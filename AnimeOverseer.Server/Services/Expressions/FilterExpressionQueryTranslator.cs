@@ -8,6 +8,18 @@ namespace AnimeOverseer.Server.Services.Expressions;
 /// <summary>Translates the deterministic expression subset supported by EF/SQLite.</summary>
 public static class FilterExpressionQueryTranslator
 {
+    public static bool CanTranslate(ExpressionNode node)
+    {
+        var parameter = Expression.Parameter(typeof(Anime), "anime");
+        return TryTranslate(node, parameter, DateTime.UtcNow, out _);
+    }
+
+    public static bool CanTranslate(FilterCondition condition)
+    {
+        var parameter = Expression.Parameter(typeof(Anime), "anime");
+        return TryBuildCondition(condition, parameter, DateTime.UtcNow, out _);
+    }
+
     public static bool CanTranslate(FilterState state)
     {
         var parameter = Expression.Parameter(typeof(Anime), "anime");

@@ -280,6 +280,17 @@
                 </div>
             }
 
+            @if (CurrentNode is ExpressionNode executionNode)
+            {
+                var databaseOnly = DraftConditionRunsInDatabase(executionNode);
+                <div class="formula-execution-status @(databaseOnly ? "formula-execution-status--database" : "formula-execution-status--memory")" role="status">
+                    <strong>@(databaseOnly ? "Database only" : "In memory")</strong>
+                    <span>@(databaseOnly
+                        ? "This condition can run entirely in SQLite, so filtering and paging stay database-backed."
+                        : "This condition cannot be translated fully to SQLite and will be evaluated after catalogue rows are loaded. It may be slower on large catalogues.")</span>
+                </div>
+            }
+
             <footer>
                 <span class="formula-dialog-status">@(DraftError is null ? "Ready to use" : "Formula needs attention")</span>
                 <button class="btn" @onclick="CloseDialog">Cancel</button>
@@ -297,6 +308,8 @@
     [Parameter] public bool UseDatePicker { get; set; }
     [Parameter] public string Placeholder { get; set; } = "Value…";
     [Parameter] public List<string> Suggestions { get; set; } = [];
+    [Parameter] public FilterCondition? Condition { get; set; }
+    [Parameter] public int ConditionValueIndex { get; set; }
 
     private readonly string ListId = $"filter-values-{Guid.NewGuid():N}";
     private readonly string SearchId = $"formula-search-{Guid.NewGuid():N}";
@@ -417,6 +430,28 @@
         .Where(function => MatchesSearch(function.Name, function.Label, function.Description, function.Category));
 
     private static bool IsFormula(string value) => value.TrimStart().StartsWith("{{", StringComparison.Ordinal);
+
+    private bool DraftConditionRunsInDatabase(ExpressionNode node)
+    {
+        if (Condition is null) return FilterExpressionQueryTranslator.CanTranslate(node);
+
+        var values = Condition.EffectiveValues.ToList();
+        while (values.Count <= ConditionValueIndex) values.Add(string.Empty);
+        values[ConditionValueIndex] = draft;
+        var candidate = new FilterCondition
+        {
+            Id = Condition.Id,
+            Field = Condition.Field,
+            Operator = Condition.Operator,
+            Value = values.FirstOrDefault() ?? string.Empty,
+            Values = values,
+            ValueLogic = Condition.ValueLogic,
+            LeftExpression = Condition.LeftExpression,
+            RightExpressions = []
+        };
+        return FilterExpressionQueryTranslator.CanTranslate(candidate);
+    }
+
     private async Task ChangeValue(ChangeEventArgs args) => await ValueChanged.InvokeAsync(args.Value?.ToString() ?? string.Empty);
     private void SetGuidedMode() { editorMode = "guided"; selectedPath = string.Empty; }
     private void SetCodeMode() => editorMode = "code";

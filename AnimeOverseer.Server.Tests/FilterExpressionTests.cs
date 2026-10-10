@@ -277,6 +277,17 @@ public sealed class FilterExpressionTests
 
 public sealed class FilterExpressionQueryTests : SqliteIntegrationTestBase
 {
+    [Theory]
+    [InlineData("div(mul(episodes, duration), 60)", true)]
+    [InlineData("concat(title, originalTitle)", false)]
+    public void Reports_whether_a_formula_can_run_in_the_database(string source, bool expected)
+    {
+        var parsed = FilterExpressionParser.Parse(source);
+
+        Assert.True(parsed.IsValid);
+        Assert.Equal(expected, FilterExpressionQueryTranslator.CanTranslate(parsed.Root!));
+    }
+
     [Fact]
     public async Task Saving_an_automatic_collection_versions_the_filter_schema()
     {
