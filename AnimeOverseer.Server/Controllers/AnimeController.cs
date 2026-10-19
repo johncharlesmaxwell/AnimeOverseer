@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Mvc;
+using AnimeOverseer.Server.Models.Api;
 using AnimeOverseer.Server.Services;
 
 namespace AnimeOverseer.Server.Controllers;
@@ -20,7 +21,7 @@ public class AnimeController : ControllerBase
         [FromQuery] string season = "spring")
     {
         var animes = await _dataSource.GetSeasonAnimes(year, season);
-        return Ok(animes);
+        return Ok(animes.Select(anime => anime.ToCatalogDto()).ToList());
     }
 
     [HttpGet("search")]
@@ -30,7 +31,7 @@ public class AnimeController : ControllerBase
             return BadRequest("Query parameter is required.");
 
         var animes = await _dataSource.SearchAsync(query);
-        return Ok(animes);
+        return Ok(animes.Select(anime => anime.ToCatalogDto()).ToList());
     }
 
     [HttpGet("{id}")]
@@ -40,7 +41,7 @@ public class AnimeController : ControllerBase
         if (anime == null)
             return NotFound();
 
-        return Ok(anime);
+        return Ok(anime.ToCatalogDto());
     }
 
     [HttpGet("genres")]
