@@ -42,13 +42,41 @@ public sealed class AnimeReviewService(AnimeDbContext db, AnimeCacheService cach
             .ToListAsync();
         var ids = reviews.SelectMany(review => JsonSerializer.Deserialize<List<int>>(review.CandidateAnimeIdsJson) ?? []).Distinct().ToList();
         var anime = await db.Animes.Include(item => item.Season).Include(item => item.TitleAliases).Where(item => ids.Contains(item.Id)).ToDictionaryAsync(item => item.Id);
-        return reviews.Select(review => new PendingAnimeReviewItem
+        return reviews.Select(review =>
         {
-            Review = review,
-            Incoming = JsonSerializer.Deserialize<AnimeImportSnapshot>(review.PayloadJson) ?? new(),
-            Candidates = (JsonSerializer.Deserialize<List<int>>(review.CandidateAnimeIdsJson) ?? [])
-                .Where(anime.ContainsKey).Select(id => anime[id]).ToList()
-        }).ToList();
+            var incoming = JsonSerializer.Deserialize<AnimeImportSnapshot>(review.PayloadJson) ?? new();
+            var candidates = (JsonSerializer.Deserialize<List<int>>(review.CandidateAnimeIdsJson) ?? [])
+                .Where(anime.ContainsKey).Select(id => anime[id]).ToList();
+            var matches = MatchesFor(review, incoming, candidates);
+            return new PendingAnimeReviewItem
+            {
+                Review = review,
+                Incoming = incoming,
+                Candidates = candidates.OrderByDescending(candidate => matches.GetValueOrDefault(candidate.Id)?.Score ?? 0).ToList(),
+                Matches = matches
+            };
+        })
+            // Highest-confidence decisions first; reviews without a live candidate last.
+            .OrderByDescending(item => item.BestMatch?.Score ?? -1)
+            .ThenByDescending(item => item.Review.CreatedAt)
+            .ToList();
+    }
+
+    private static Dictionary<int, CandidateMatch> MatchesFor(PendingAnimeReview review, AnimeImportSnapshot incoming, List<Anime> candidates)
+    {
+        var stored = string.IsNullOrWhiteSpace(review.MatchEvidenceJson)
+            ? []
+            : JsonSerializer.Deserialize<List<CandidateMatch>>(review.MatchEvidenceJson) ?? [];
+        var matches = stored.ToDictionary(match => match.AnimeId);
+        // Reviews queued before scoring existed have no stored evidence. Score
+        // them for display without changing the stored review.
+        if (candidates.Any(candidate => !matches.ContainsKey(candidate.Id)))
+        {
+            var source = AnimeCacheService.FromSnapshot(incoming);
+            foreach (var candidate in candidates.Where(candidate => !matches.ContainsKey(candidate.Id)))
+                matches[candidate.Id] = MatchScorer.Score(source, candidate);
+        }
+        return matches;
     }
 
     public async Task<int> ResolveAsync(IEnumerable<PendingAnimeReviewItem> items, string decision)
@@ -108,6 +136,8 @@ public sealed class PendingAnimeReviewItem
     public PendingAnimeReview Review { get; init; } = null!;
     public AnimeImportSnapshot Incoming { get; init; } = new();
     public List<Anime> Candidates { get; init; } = [];
+    public Dictionary<int, CandidateMatch> Matches { get; init; } = [];
+    public CandidateMatch? BestMatch => Candidates.Count > 0 ? Matches.GetValueOrDefault(Candidates[0].Id) : null;
 }
 
 public sealed class AnimeNameReviewItem

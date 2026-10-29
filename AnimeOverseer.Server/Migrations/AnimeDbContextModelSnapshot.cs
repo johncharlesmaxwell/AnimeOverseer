@@ -502,6 +502,8 @@ namespace AnimeOverseer.Server.Migrations
 
                     b.Property<string>("CandidateAnimeIdsJson").IsRequired().HasColumnType("TEXT");
                     b.Property<DateTime>("CreatedAt").HasColumnType("TEXT");
+                    b.Property<string>("MatchEvidenceJson").HasColumnType("TEXT");
+                    b.Property<int?>("MatchScore").HasColumnType("INTEGER");
                     b.Property<string>("PayloadJson").IsRequired().HasColumnType("TEXT");
                     b.Property<string>("Reason").IsRequired().HasColumnType("TEXT");
                     b.Property<DateTime?>("ResolvedAt").HasColumnType("TEXT");

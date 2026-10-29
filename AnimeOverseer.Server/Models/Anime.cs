@@ -161,6 +161,10 @@ public class PendingAnimeReview
     public string Reason { get; set; } = string.Empty;
     public string PayloadJson { get; set; } = string.Empty;
     public string CandidateAnimeIdsJson { get; set; } = "[]";
+    // The best candidate's 0-100 match score, and every candidate's scored
+    // evidence. Null on reviews queued before match scoring existed.
+    public int? MatchScore { get; set; }
+    public string? MatchEvidenceJson { get; set; }
     public string Status { get; set; } = "Pending"; // Pending, Merged, Created, Deferred
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
     public DateTime? ResolvedAt { get; set; }

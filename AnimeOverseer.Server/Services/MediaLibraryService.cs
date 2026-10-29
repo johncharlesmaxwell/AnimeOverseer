@@ -1,8 +1,5 @@
 using System.Net.Http.Json;
-using System.Globalization;
 using System.Text.Json.Nodes;
-using System.Text;
-using System.Text.RegularExpressions;
 using AnimeOverseer.Server.Models;
 
 namespace AnimeOverseer.Server.Services;
@@ -72,8 +69,8 @@ public class MediaLibraryService(IServiceScopeFactory scopeFactory, IHttpClientF
         if (string.IsNullOrWhiteSpace(title1) || string.IsNullOrWhiteSpace(title2))
             return false;
 
-        var t1 = NormalizeTitle(title1);
-        var t2 = NormalizeTitle(title2);
+        var t1 = TitleNormalizer.Normalize(title1);
+        var t2 = TitleNormalizer.Normalize(title2);
 
         if (t1 == t2)
             return true;
@@ -88,7 +85,7 @@ public class MediaLibraryService(IServiceScopeFactory scopeFactory, IHttpClientF
             longer.Length > shorter.Length &&
             longer[shorter.Length] == ' ')
         {
-            return IsSeasonIndicator(longer[(shorter.Length + 1)..]);
+            return TitleNormalizer.IsSeasonIndicator(longer[(shorter.Length + 1)..]);
         }
 
         return false;
@@ -102,43 +99,6 @@ public class MediaLibraryService(IServiceScopeFactory scopeFactory, IHttpClientF
             .Select(title => title!.Trim())
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
-
-    private static string NormalizeTitle(string title)
-    {
-        var result = new StringBuilder();
-        var previousWasSeparator = true;
-
-        foreach (var character in title.Trim().Normalize(NormalizationForm.FormD))
-        {
-            if (CharUnicodeInfo.GetUnicodeCategory(character) == UnicodeCategory.NonSpacingMark)
-                continue;
-
-            // Apostrophes are commonly omitted by Sonarr/Radarr title sources.
-            if (character is '\'' or '\u2018' or '\u2019')
-                continue;
-
-            if (char.IsLetterOrDigit(character))
-            {
-                result.Append(char.ToLowerInvariant(character));
-                previousWasSeparator = false;
-            }
-            else if (!previousWasSeparator)
-            {
-                result.Append(' ');
-                previousWasSeparator = true;
-            }
-        }
-
-        return result.ToString().TrimEnd();
-    }
-
-    private static bool IsSeasonIndicator(string text)
-    {
-        // Deliberately exclude a bare number ("Title 2"): it commonly denotes
-        // a distinct sequel, so treating it as the same library item is unsafe.
-        return Regex.IsMatch(text, @"^(?:season\s*\d+|\d+(?:st|nd|rd|th)\s+season|s\s*\d+)$",
-            RegexOptions.CultureInvariant);
-    }
 
     public async Task EnsureRefreshedAsync()
     {

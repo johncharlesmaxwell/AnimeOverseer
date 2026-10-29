@@ -2,8 +2,6 @@ using AnimeOverseer.Server.Data;
 using AnimeOverseer.Server.Models;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Memory;
-using System.Globalization;
-using System.Text;
 using System.Text.Json;
 
 namespace AnimeOverseer.Server.Services;
@@ -533,6 +531,10 @@ public class AnimeCacheService(AnimeDbContext db, AniListApiService aniList, Jik
             : candidates.Count > 1
                 ? "More than one title/alias candidate was found"
                 : "Title or alias match needs confirmation";
+        var matches = candidates.DistinctBy(candidate => candidate.Id)
+            .Select(candidate => MatchScorer.Score(source, candidate))
+            .OrderByDescending(match => match.Score)
+            .ToList();
         db.PendingAnimeReviews.Add(new PendingAnimeReview
         {
             SeasonId = fixedSeasonId ?? await UnknownSeasonIdAsync(ct),
@@ -542,6 +544,8 @@ public class AnimeCacheService(AnimeDbContext db, AniListApiService aniList, Jik
             Reason = reason,
             PayloadJson = JsonSerializer.Serialize(ToSnapshot(source)),
             CandidateAnimeIdsJson = JsonSerializer.Serialize(candidates.Select(candidate => candidate.Id).Distinct()),
+            MatchScore = matches.FirstOrDefault()?.Score,
+            MatchEvidenceJson = JsonSerializer.Serialize(matches),
         });
         await db.SaveChangesAsync(ct);
     }
@@ -566,7 +570,7 @@ public class AnimeCacheService(AnimeDbContext db, AniListApiService aniList, Jik
         SourceImages = source.SourceImages
     };
 
-    private static Anime FromSnapshot(AnimeImportSnapshot source) => new()
+    internal static Anime FromSnapshot(AnimeImportSnapshot source) => new()
     {
         AniListId = source.AniListId, MALId = source.MALId, KitsuId = source.KitsuId,
         Title = source.Title, HasEnglishTitle = source.HasEnglishTitle, OriginalTitle = source.OriginalTitle,
@@ -590,61 +594,20 @@ public class AnimeCacheService(AnimeDbContext db, AniListApiService aniList, Jik
 
     private static IEnumerable<string> Names(Anime anime)
         => new[] { anime.Title, anime.OriginalTitle }.Concat(anime.AlternativeTitles).Concat(anime.TitleAliases.Select(alias => alias.Title))
-            .Select(NormalizeName).Where(name => name.Length >= 3).Distinct();
-
-    private static string NormalizeName(string? value)
-    {
-        if (string.IsNullOrWhiteSpace(value)) return string.Empty;
-        var normalized = value.Normalize(NormalizationForm.FormD);
-        var result = new StringBuilder(normalized.Length);
-        foreach (var character in normalized)
-        {
-            if (CharUnicodeInfo.GetUnicodeCategory(character) == UnicodeCategory.NonSpacingMark) continue;
-            if (char.IsLetterOrDigit(character)) result.Append(char.ToLowerInvariant(character));
-        }
-        return result.ToString();
-    }
+            .Select(TitleNormalizer.Compact).Where(name => name.Length >= 3).Distinct();
 
     private static double BestAliasScore(Anime source, Anime existing)
     {
-        // Tokenize the original titles rather than Names(), which removes punctuation
-        // for exact comparisons and would collapse word boundaries before scoring.
-        var sourceNames = RawNames(source).Select(NameTokens).Where(tokens => tokens.Count >= 2).ToList();
-        var existingNames = RawNames(existing).Select(NameTokens).Where(tokens => tokens.Count >= 2).ToList();
-        return sourceNames.SelectMany(left => existingNames.Select(right => TokenScore(left, right))).DefaultIfEmpty(0).Max();
+        // Tokenize the original titles rather than Names(), which removes word
+        // boundaries for exact comparisons and would collapse tokens before scoring.
+        var sourceNames = RawNames(source).Select(TitleNormalizer.Tokens).Where(tokens => tokens.Count >= 2).ToList();
+        var existingNames = RawNames(existing).Select(TitleNormalizer.Tokens).Where(tokens => tokens.Count >= 2).ToList();
+        return sourceNames.SelectMany(left => existingNames.Select(right => TitleNormalizer.TokenScore(left, right))).DefaultIfEmpty(0).Max();
     }
 
     private static IEnumerable<string> RawNames(Anime anime)
         => new[] { anime.Title, anime.OriginalTitle }.Concat(anime.AlternativeTitles).Concat(anime.TitleAliases.Select(alias => alias.Title))
             .OfType<string>().Where(title => !string.IsNullOrWhiteSpace(title));
-
-    private static HashSet<string> NameTokens(string name)
-    {
-        var text = name.Normalize(NormalizationForm.FormD);
-        var builder = new StringBuilder(text.Length);
-        foreach (var character in text)
-        {
-            if (CharUnicodeInfo.GetUnicodeCategory(character) == UnicodeCategory.NonSpacingMark) continue;
-            builder.Append(char.IsLetterOrDigit(character) ? char.ToLowerInvariant(character) : ' ');
-        }
-        return builder.ToString().Split(' ', StringSplitOptions.RemoveEmptyEntries)
-            .Select(NormalizeToken)
-            .Where(token => token.Length > 0 && token is not "the" and not "a" and not "an" and not "of" and not "season" and not "part")
-            .ToHashSet(StringComparer.Ordinal);
-    }
-
-    private static string NormalizeToken(string token) => token switch
-    {
-        "i" => "1", "ii" => "2", "iii" => "3", "iv" => "4", "v" => "5",
-        "vi" => "6", "vii" => "7", "viii" => "8", "ix" => "9", "x" => "10",
-        _ => token
-    };
-
-    private static double TokenScore(HashSet<string> left, HashSet<string> right)
-    {
-        var union = left.Union(right).Count();
-        return union == 0 ? 0 : (double)left.Intersect(right).Count() / union;
-    }
 
     private static void Copy(Anime t, Anime s)
     {

@@ -74,6 +74,29 @@ public sealed class ImportIntegrationTests : SqliteIntegrationTestBase
     }
 
     [Fact]
+    public async Task Staged_review_stores_the_match_score_and_evidence()
+    {
+        await using var db = CreateDb();
+        var season = await AddSeasonAsync(db);
+        db.Animes.Add(new Anime { AniListId = 81, Title = "Orbit", Type = "TV", Episodes = 12, StartDate = new DateTime(2026, 4, 1), SeasonId = season.Id });
+        await db.SaveChangesAsync();
+        var incoming = Incoming(82, "Orbit", true);
+        incoming.Type = "TV";
+        incoming.Episodes = 12;
+        incoming.StartDate = new DateTime(2026, 4, 8);
+
+        await CreateCache(db).FetchAndCacheSeasonsFromAsync(2026, ["spring"], (_, _, _) => Task.FromResult(new List<Anime> { incoming }));
+
+        var review = await db.PendingAnimeReviews.SingleAsync();
+        Assert.NotNull(review.MatchScore);
+        var match = Assert.Single(System.Text.Json.JsonSerializer.Deserialize<List<AnimeOverseer.Server.Services.CandidateMatch>>(review.MatchEvidenceJson!)!);
+        Assert.Equal(review.MatchScore, match.Score);
+        // Different AniList IDs on both sides are a hard conflict even with agreeing metadata.
+        Assert.Equal("Conflict", AnimeOverseer.Server.Services.MatchScorer.Confidence(match));
+        Assert.Contains("\"HardNegative\"", review.MatchEvidenceJson);
+    }
+
+    [Fact]
     public async Task Title_match_with_a_conflicting_mal_id_is_not_staged_for_review()
     {
         await using var db = CreateDb();

@@ -8,7 +8,7 @@
 <PageTitle>Review catalogue matches - AnimeOverseer</PageTitle>
 
 <div class="review-page">
-    <div class="review-heading"><div><h1>Review catalogue matches</h1><p>Only title or alias matches are held here. Provider-ID matches continue automatically.</p></div><a href="/settings" class="review-back">← Settings</a></div>
+    <div class="review-heading"><div><h1>Review catalogue matches</h1><p>Only title or alias matches are held here. Provider-ID matches continue automatically. Sorted by match score, most confident first.</p></div><a href="/settings" class="review-back">← Settings</a></div>
     @if (_items is null) { <p class="review-muted">Loading review queue…</p> }
     else if (_items.Count == 0) { <div class="review-empty"><h3>Nothing needs review</h3><p>Future uncertain title matches will appear here instead of changing catalogue records.</p></div> }
     else
@@ -26,7 +26,18 @@
                         <div><span class="review-label">Incoming</span><h3>@item.Incoming.Title</h3><p>@FormatDate(item.Incoming.StartDate) · @SourceLinks(item.Incoming.MALId, item.Incoming.AniListId)</p></div>
                     </div>
                     <div class="review-arrow">→</div>
-                    <div class="review-candidate review-media"><span class="review-label">@CandidateLabel(item)</span>@if (item.Candidates.Count == 1) { var candidate = item.Candidates[0]; <a href="/anime/@candidate.Id" class="review-poster-link" title="Open @candidate.Title" @onclick:stopPropagation>@if (!string.IsNullOrWhiteSpace(candidate.DisplayImageUrl)) { <img class="review-poster" src="@(candidate.DisplayLocalImagePath ?? candidate.DisplayImageUrl)" alt="@candidate.Title poster" /> } else { <div class="review-poster review-poster-empty">🎬</div> }</a><div><h3><a href="/anime/@candidate.Id" @onclick:stopPropagation>@candidate.Title</a></h3><p>@FormatDate(candidate.StartDate) · @candidate.Season.Year @candidate.Season.Name · @SourceLinks(candidate.MALId, candidate.AniListId)</p><a class="review-record-link" href="/anime/@candidate.Id" @onclick:stopPropagation>Open current record →</a></div> } else if (item.Candidates.Count > 1) { <p>@item.Candidates.Count possible matches — choose Create as new, or review individually after narrowing the catalogue.</p> } else { <p>The prior candidate no longer exists. Create this record as new.</p> }</div>
+                    <div class="review-candidate review-media"><span class="review-label">@CandidateLabel(item)</span>@if (item.Candidates.Count == 1) { var candidate = item.Candidates[0]; <a href="/anime/@candidate.Id" class="review-poster-link" title="Open @candidate.Title" @onclick:stopPropagation>@if (!string.IsNullOrWhiteSpace(candidate.DisplayImageUrl)) { <img class="review-poster" src="@(candidate.DisplayLocalImagePath ?? candidate.DisplayImageUrl)" alt="@candidate.Title poster" /> } else { <div class="review-poster review-poster-empty">🎬</div> }</a><div><h3><a href="/anime/@candidate.Id" @onclick:stopPropagation>@candidate.Title</a></h3><p>@FormatDate(candidate.StartDate) · @candidate.Season.Year @candidate.Season.Name · @SourceLinks(candidate.MALId, candidate.AniListId)</p><a class="review-record-link" href="/anime/@candidate.Id" @onclick:stopPropagation>Open current record →</a></div> } else if (item.Candidates.Count > 1) { <p>@item.Candidates.Count possible matches — choose Create as new, or review individually after narrowing the catalogue.</p><ol class="review-candidate-ranking">@foreach (var candidate in item.Candidates) { var match = item.Matches.GetValueOrDefault(candidate.Id); <li><a href="/anime/@candidate.Id" @onclick:stopPropagation>@candidate.Title</a> <span>@FormatDate(candidate.StartDate)</span>@if (match is not null) { <span class="review-score review-score-@MatchScorer.Confidence(match).ToLowerInvariant()">@match.Score</span> }</li> }</ol> } else { <p>The prior candidate no longer exists. Create this record as new.</p> }</div>
+                    @if (item.BestMatch is { } best)
+                    {
+                        var confidence = MatchScorer.Confidence(best);
+                        <div class="review-evidence">
+                            <span class="review-score review-score-@confidence.ToLowerInvariant()" title="Match score for the @(item.Candidates.Count > 1 ? "top-ranked" : "shown") candidate">@confidence · @best.Score</span>
+                            @foreach (var evidence in best.Evidence.Where(evidence => evidence.Kind != MatchEvidenceKind.Neutral))
+                            {
+                                <span class="review-evidence-item review-evidence-@evidence.Kind.ToString().ToLowerInvariant()">@EvidenceSign(evidence) @evidence.Detail</span>
+                            }
+                        </div>
+                    }
                     <div class="review-reason">@item.Review.Reason</div>
                 </div>
             }
@@ -84,5 +95,6 @@
         if (aniListId is > 0) { builder.OpenElement(sequence++, "a"); builder.AddAttribute(sequence++, "href", $"https://anilist.co/anime/{aniListId}"); builder.AddAttribute(sequence++, "target", "_blank"); builder.AddContent(sequence++, $"AniList {aniListId}"); builder.CloseElement(); }
         if (malId is not > 0 && aniListId is not > 0) builder.AddContent(sequence++, "No provider ID");
     };
+    private static string EvidenceSign(MatchEvidence evidence) => evidence.Kind switch { MatchEvidenceKind.Positive => "+", MatchEvidenceKind.HardNegative => "✕", _ => "−" };
     private static string CandidateLabel(PendingAnimeReviewItem item) => item.Candidates.Count switch { 0 => "No current candidate", 1 => "Possible match", _ => "Possible matches" };
 }

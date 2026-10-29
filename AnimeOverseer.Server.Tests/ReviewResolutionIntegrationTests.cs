@@ -99,4 +99,32 @@ public sealed class ReviewResolutionIntegrationTests : SqliteIntegrationTestBase
         Assert.Equal(preferred.Id, merged.PreferredImageId);
         Assert.Equal(2, merged.Images.Count);
     }
+
+    [Fact]
+    public async Task Pending_reviews_without_stored_scores_are_scored_on_read_and_sorted_by_confidence()
+    {
+        await using var db = CreateDb();
+        var season = await AddSeasonAsync(db);
+        var strong = new Anime { Title = "Orbit", Type = "TV", SeasonId = season.Id };
+        var weak = new Anime { Title = "Lantern", Type = "Movie", SeasonId = season.Id };
+        db.Animes.AddRange(strong, weak);
+        await db.SaveChangesAsync();
+        var weakReview = AddReview(season.Id, Incoming(11, "Lantern", true), [weak.Id]);
+        weakReview.CreatedAt = DateTime.UtcNow;
+        var strongReview = AddReview(season.Id, Incoming(12, "Orbit", true), [strong.Id]);
+        strongReview.CreatedAt = DateTime.UtcNow.AddDays(-1);
+        db.PendingAnimeReviews.AddRange(weakReview, strongReview);
+        await db.SaveChangesAsync();
+        // Snapshots built by AddReview carry no format, so make the weak one disagree.
+        var snapshot = System.Text.Json.JsonSerializer.Deserialize<AnimeImportSnapshot>(weakReview.PayloadJson)!;
+        snapshot.Type = "TV";
+        weakReview.PayloadJson = System.Text.Json.JsonSerializer.Serialize(snapshot);
+        await db.SaveChangesAsync();
+
+        var items = await new AnimeReviewService(db, CreateCache(db)).GetPendingAsync();
+
+        Assert.Equal([strongReview.Id, weakReview.Id], items.Select(item => item.Review.Id));
+        Assert.Equal("Conflict", MatchScorer.Confidence(items[1].BestMatch!));
+        Assert.Null((await db.PendingAnimeReviews.FindAsync(strongReview.Id))!.MatchScore);
+    }
 }
