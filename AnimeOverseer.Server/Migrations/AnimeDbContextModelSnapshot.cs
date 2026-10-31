@@ -500,13 +500,17 @@ namespace AnimeOverseer.Server.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("INTEGER");
 
+                    b.Property<bool>("AutoDecisionUndone").HasColumnType("INTEGER");
+                    b.Property<bool>("AutoResolved").HasColumnType("INTEGER");
                     b.Property<string>("CandidateAnimeIdsJson").IsRequired().HasColumnType("TEXT");
                     b.Property<DateTime>("CreatedAt").HasColumnType("TEXT");
                     b.Property<string>("MatchEvidenceJson").HasColumnType("TEXT");
                     b.Property<int?>("MatchScore").HasColumnType("INTEGER");
                     b.Property<string>("PayloadJson").IsRequired().HasColumnType("TEXT");
+                    b.Property<string>("PreMergeSnapshotJson").HasColumnType("TEXT");
                     b.Property<string>("Reason").IsRequired().HasColumnType("TEXT");
                     b.Property<DateTime?>("ResolvedAt").HasColumnType("TEXT");
+                    b.Property<int?>("ResolvedAnimeId").HasColumnType("INTEGER");
                     b.Property<int>("SeasonId").HasColumnType("INTEGER");
                     b.Property<int?>("SourceAniListId").HasColumnType("INTEGER");
                     b.Property<int?>("SourceMalId").HasColumnType("INTEGER");

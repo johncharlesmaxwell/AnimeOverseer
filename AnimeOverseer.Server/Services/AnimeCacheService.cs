@@ -395,9 +395,14 @@ public class AnimeCacheService(AnimeDbContext db, AniListApiService aniList, Jik
         {
             var candidateIds = JsonSerializer.Deserialize<List<int>>(review.CandidateAnimeIdsJson) ?? [];
             if (!candidateIds.Contains(candidateAnimeId.Value)) return false;
-            var existing = await db.Animes.Include(item => item.TitleAliases).FirstOrDefaultAsync(item => item.Id == candidateAnimeId.Value, ct);
+            var existing = await db.Animes.Include(item => item.TitleAliases).Include(item => item.Images)
+                .Include(item => item.AnimeGenres).ThenInclude(item => item.Genre)
+                .Include(item => item.AnimeThemes).ThenInclude(item => item.Theme)
+                .Include(item => item.AnimeDemographics).ThenInclude(item => item.Demographic)
+                .FirstOrDefaultAsync(item => item.Id == candidateAnimeId.Value, ct);
             if (existing is null) return false;
             target = existing;
+            review.PreMergeSnapshotJson = JsonSerializer.Serialize(ToRestorePoint(existing));
         }
         else return false;
 
@@ -409,6 +414,7 @@ public class AnimeCacheService(AnimeDbContext db, AniListApiService aniList, Jik
         await ReplaceTagsAsync(target, source, ct);
         review.Status = decision == "Create" ? "Created" : "Merged";
         review.ResolvedAt = DateTime.UtcNow;
+        review.ResolvedAnimeId = target.Id;
         await db.SaveChangesAsync(ct);
         return true;
     }
@@ -432,6 +438,7 @@ public class AnimeCacheService(AnimeDbContext db, AniListApiService aniList, Jik
                                   (source.MALId is not > 0 || !resolvedProviderIds.Contains($"m:{source.MALId}"))))
             existingRows = await db.Animes.Include(a => a.TitleAliases).ToListAsync(ct);
         var existing = new Dictionary<string, Anime>();
+        var queuedReviews = new List<PendingAnimeReview>();
         var existingByName = new Dictionary<string, HashSet<Anime>>(StringComparer.Ordinal);
         foreach (var row in existingRows)
         {
@@ -458,7 +465,7 @@ public class AnimeCacheService(AnimeDbContext db, AniListApiService aniList, Jik
                             // A title is search evidence, not an identity.  This avoids a
                             // franchise synonym (for example a season-one title attached to
                             // season four) silently overwriting a different catalogue row.
-                            await QueueForReviewAsync(source, fixedSeasonId, candidates, ct);
+                            if (await QueueForReviewAsync(source, fixedSeasonId, candidates, ct) is { } queued) queuedReviews.Add(queued);
                             continue;
                         }
                     }
@@ -495,6 +502,20 @@ public class AnimeCacheService(AnimeDbContext db, AniListApiService aniList, Jik
             // the next replacement independent of the joins tracked for this one.
             db.ChangeTracker.Clear();
         }
+        if (queuedReviews.Count > 0)
+        {
+            // Apply decision bands only after the batch is persisted, so a resolution
+            // never interleaves with the batch's tracked rows.
+            var settings = await MatchingSettings.LoadAsync(db, ct);
+            foreach (var review in queuedReviews)
+            {
+                db.ChangeTracker.Clear();
+                if (await ApplySuggestionAsync(review.Id, settings, ct) is not PendingReviewRecheckOutcome.Unchanged &&
+                    await db.PendingAnimeReviews.Where(item => item.Id == review.Id).Select(item => item.ResolvedAnimeId).FirstOrDefaultAsync(ct) is int resolvedId &&
+                    !syncedIds.Contains(resolvedId))
+                    syncedIds.Add(resolvedId);
+            }
+        }
         return syncedIds;
     }
 
@@ -528,19 +549,19 @@ public class AnimeCacheService(AnimeDbContext db, AniListApiService aniList, Jik
         return ranked.Select(x => x.Anime).ToList();
     }
 
-    private async Task QueueForReviewAsync(Anime source, int? fixedSeasonId, IReadOnlyCollection<Anime> candidates, CancellationToken ct)
+    private async Task<PendingAnimeReview?> QueueForReviewAsync(Anime source, int? fixedSeasonId, IReadOnlyCollection<Anime> candidates, CancellationToken ct)
     {
         var isDuplicate = await db.PendingAnimeReviews.AnyAsync(review =>
             review.Status == "Pending" &&
             ((source.AniListId.HasValue && source.AniListId.Value > 0 && review.SourceAniListId == source.AniListId) ||
              (source.MALId.HasValue && source.MALId.Value > 0 && review.SourceMalId == source.MALId)), ct);
-        if (isDuplicate) return;
+        if (isDuplicate) return null;
 
         var reason = candidates.Count > 1
             ? "More than one title/alias candidate was found"
             : "Title or alias match needs confirmation";
         var matches = ScoreCandidates(source, candidates);
-        db.PendingAnimeReviews.Add(new PendingAnimeReview
+        var review = new PendingAnimeReview
         {
             SeasonId = fixedSeasonId ?? await UnknownSeasonIdAsync(ct),
             SourceName = "Catalogue import",
@@ -551,8 +572,10 @@ public class AnimeCacheService(AnimeDbContext db, AniListApiService aniList, Jik
             CandidateAnimeIdsJson = JsonSerializer.Serialize(candidates.Select(candidate => candidate.Id).Distinct()),
             MatchScore = matches.FirstOrDefault()?.Score,
             MatchEvidenceJson = JsonSerializer.Serialize(matches),
-        });
+        };
+        db.PendingAnimeReviews.Add(review);
         await db.SaveChangesAsync(ct);
+        return review;
     }
 
     private static List<CandidateMatch> ScoreCandidates(Anime source, IEnumerable<Anime> candidates)
@@ -611,7 +634,7 @@ public class AnimeCacheService(AnimeDbContext db, AniListApiService aniList, Jik
             : null;
         if (confirmedId is null && source.MALId is > 0)
             confirmedId = await db.Animes.Where(item => item.MALId == source.MALId).Select(item => (int?)item.Id).FirstOrDefaultAsync(ct);
-        if (confirmedId is int confirmed)
+        if (confirmedId is int confirmed && !review.AutoDecisionUndone)
         {
             // The confirmed row may not have been a title candidate.
             if (!candidateIds.Contains(confirmed)) review.CandidateAnimeIdsJson = JsonSerializer.Serialize(candidateIds.Append(confirmed));
@@ -621,24 +644,119 @@ public class AnimeCacheService(AnimeDbContext db, AniListApiService aniList, Jik
         }
 
         var viable = ViableCandidates(source, candidates);
-        if (viable.Count == 0)
+        if (viable.Count == 0 && !review.AutoDecisionUndone)
         {
             await db.SaveChangesAsync(ct);
             return await ResolveAutomaticallyAsync(review, "Create", null, "provider IDs or relations ruled out every candidate", ct)
                 ? PendingReviewRecheckOutcome.Created : PendingReviewRecheckOutcome.Unchanged;
         }
 
-        var matches = ScoreCandidates(source, viable);
-        review.CandidateAnimeIdsJson = JsonSerializer.Serialize(viable.Select(candidate => candidate.Id));
-        review.MatchScore = matches[0].Score;
-        review.MatchEvidenceJson = JsonSerializer.Serialize(matches);
+        if (viable.Count > 0)
+        {
+            var matches = ScoreCandidates(source, viable);
+            review.CandidateAnimeIdsJson = JsonSerializer.Serialize(viable.Select(candidate => candidate.Id));
+            review.MatchScore = matches[0].Score;
+            review.MatchEvidenceJson = JsonSerializer.Serialize(matches);
+        }
         await db.SaveChangesAsync(ct);
+        var applied = await ApplySuggestionAsync(review.Id, await MatchingSettings.LoadAsync(db, ct), ct);
+        if (applied is not PendingReviewRecheckOutcome.Unchanged) return applied;
         return viable.Count < candidateIds.Count ? PendingReviewRecheckOutcome.Narrowed : PendingReviewRecheckOutcome.Unchanged;
+    }
+
+    /// <summary>
+    /// Resolves a pending review by its decision band when automatic decisions are
+    /// on. Reviews a person has already overruled are left for that person.
+    /// </summary>
+    private async Task<PendingReviewRecheckOutcome> ApplySuggestionAsync(int reviewId, MatchingSettings settings, CancellationToken ct)
+    {
+        if (settings.Mode != AutoDecisionMode.Apply) return PendingReviewRecheckOutcome.Unchanged;
+        var review = await db.PendingAnimeReviews.FirstOrDefaultAsync(item => item.Id == reviewId && item.Status == "Pending", ct);
+        if (review is null || review.AutoDecisionUndone || string.IsNullOrWhiteSpace(review.MatchEvidenceJson)) return PendingReviewRecheckOutcome.Unchanged;
+        var matches = JsonSerializer.Deserialize<List<CandidateMatch>>(review.MatchEvidenceJson) ?? [];
+        if (MatchScorer.Suggest(matches, settings.MergeThreshold) is not { } suggestion) return PendingReviewRecheckOutcome.Unchanged;
+        if (!await ResolveAutomaticallyAsync(review, suggestion.Decision, suggestion.AnimeId, suggestion.Explanation, ct)) return PendingReviewRecheckOutcome.Unchanged;
+        return suggestion.Decision == "Merge" ? PendingReviewRecheckOutcome.Merged : PendingReviewRecheckOutcome.Created;
+    }
+
+    /// <summary>
+    /// Reverses an automatic Merge or Create and returns the review to the queue,
+    /// marked so automation will not decide it again. Returns null on success, or
+    /// why the decision cannot be undone.
+    /// </summary>
+    public async Task<string?> UndoAutomaticResolutionAsync(int reviewId, CancellationToken ct = default)
+    {
+        var review = await db.PendingAnimeReviews.FirstOrDefaultAsync(item => item.Id == reviewId && item.AutoResolved && (item.Status == "Merged" || item.Status == "Created"), ct);
+        if (review is null) return "This review is not an automatic decision that can be undone.";
+        if (review.ResolvedAnimeId is not int animeId) return "The resolved catalogue record was not recorded.";
+
+        if (review.Status == "Created")
+        {
+            var created = await db.Animes.FirstOrDefaultAsync(item => item.Id == animeId, ct);
+            if (created is not null)
+            {
+                // Deleting a record someone has since used would lose their work.
+                if (await db.Animes.Where(item => item.Id == animeId).SelectMany(item => item.Requests).AnyAsync(ct) ||
+                    await db.AnimeCollectionItems.AnyAsync(item => item.AnimeId == animeId, ct))
+                    return "The created record has requests or collection entries; remove those first.";
+                db.Animes.Remove(created);
+            }
+        }
+        else
+        {
+            var restore = string.IsNullOrWhiteSpace(review.PreMergeSnapshotJson) ? null : JsonSerializer.Deserialize<AnimeRestorePoint>(review.PreMergeSnapshotJson);
+            if (restore is null) return "No pre-merge copy of the record was saved.";
+            var target = await db.Animes.Include(item => item.TitleAliases).Include(item => item.Images).FirstOrDefaultAsync(item => item.Id == animeId, ct);
+            if (target is null) return "The merged catalogue record no longer exists.";
+            await RestoreAsync(target, restore, ct);
+        }
+
+        review.Status = "Pending";
+        review.ResolvedAt = null;
+        review.ResolvedAnimeId = null;
+        review.PreMergeSnapshotJson = null;
+        review.AutoResolved = false;
+        review.AutoDecisionUndone = true;
+        review.Reason = $"{review.Reason} · automatic decision undone";
+        await db.SaveChangesAsync(ct);
+        return null;
+    }
+
+    private static AnimeRestorePoint ToRestorePoint(Anime anime)
+    {
+        var fields = ToSnapshot(anime);
+        fields.AlternativeTitles = [];
+        return new AnimeRestorePoint
+        {
+            Fields = fields,
+            LocalImagePath = anime.LocalImagePath,
+            PreferredImageId = anime.PreferredImageId,
+            Aliases = anime.TitleAliases.Select(alias => alias.Title).ToList(),
+            ImageIds = anime.Images.Select(image => image.Id).ToList()
+        };
+    }
+
+    private async Task RestoreAsync(Anime target, AnimeRestorePoint restore, CancellationToken ct)
+    {
+        // Assign directly: Copy() deliberately refuses to clear IDs or downgrade
+        // an English title, which is exactly what an undo has to do.
+        var fields = restore.Fields;
+        target.Title = fields.Title; target.HasEnglishTitle = fields.HasEnglishTitle; target.OriginalTitle = fields.OriginalTitle;
+        target.Synopsis = fields.Synopsis; target.ImageUrl = fields.ImageUrl; target.LocalImagePath = restore.LocalImagePath;
+        target.AniListId = fields.AniListId; target.MALId = fields.MALId; target.KitsuId = fields.KitsuId;
+        target.Type = fields.Type; target.Episodes = fields.Episodes; target.Duration = fields.Duration; target.Rating = fields.Rating;
+        target.Status = fields.Status; target.StartDate = fields.StartDate; target.EndDate = fields.EndDate;
+        db.AnimeTitleAliases.RemoveRange(target.TitleAliases.Where(alias => !restore.Aliases.Contains(alias.Title, StringComparer.OrdinalIgnoreCase)));
+        db.AnimeImages.RemoveRange(target.Images.Where(image => !restore.ImageIds.Contains(image.Id)));
+        target.PreferredImageId = restore.PreferredImageId is int preferred && restore.ImageIds.Contains(preferred) ? preferred : null;
+        await db.SaveChangesAsync(ct);
+        await ReplaceTagsAsync(target, FromSnapshot(fields), ct);
     }
 
     private async Task<bool> ResolveAutomaticallyAsync(PendingAnimeReview review, string decision, int? candidateId, string because, CancellationToken ct)
     {
         if (!await ResolvePendingReviewAsync(review.Id, decision, candidateId, ct)) return false;
+        review.AutoResolved = true;
         review.Reason = $"{review.Reason} · resolved automatically: {because}";
         await db.SaveChangesAsync(ct);
         return true;

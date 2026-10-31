@@ -42,6 +42,7 @@ public sealed class AnimeReviewService(AnimeDbContext db, AnimeCacheService cach
             .ToListAsync();
         var ids = reviews.SelectMany(review => JsonSerializer.Deserialize<List<int>>(review.CandidateAnimeIdsJson) ?? []).Distinct().ToList();
         var anime = await db.Animes.Include(item => item.Season).Include(item => item.TitleAliases).Where(item => ids.Contains(item.Id)).ToDictionaryAsync(item => item.Id);
+        var settings = await MatchingSettings.LoadAsync(db);
         return reviews.Select(review =>
         {
             var incoming = JsonSerializer.Deserialize<AnimeImportSnapshot>(review.PayloadJson) ?? new();
@@ -53,7 +54,11 @@ public sealed class AnimeReviewService(AnimeDbContext db, AnimeCacheService cach
                 Review = review,
                 Incoming = incoming,
                 Candidates = candidates.OrderByDescending(candidate => matches.GetValueOrDefault(candidate.Id)?.Score ?? 0).ToList(),
-                Matches = matches
+                Matches = matches,
+                // Undone reviews belong to a person; automation stops suggesting for them.
+                Suggestion = settings.Mode == AutoDecisionMode.Off || review.AutoDecisionUndone
+                    ? null
+                    : MatchScorer.Suggest(candidates.Where(candidate => matches.ContainsKey(candidate.Id)).Select(candidate => matches[candidate.Id]).ToList(), settings.MergeThreshold)
             };
         })
             // Highest-confidence decisions first; reviews without a live candidate last.
@@ -78,6 +83,33 @@ public sealed class AnimeReviewService(AnimeDbContext db, AnimeCacheService cach
         }
         return matches;
     }
+
+    public async Task<List<AutoResolvedReviewItem>> GetAutoResolvedAsync(int take = 100)
+    {
+        var reviews = await db.PendingAnimeReviews
+            .Where(review => review.AutoResolved && (review.Status == "Merged" || review.Status == "Created"))
+            .OrderByDescending(review => review.ResolvedAt)
+            .Take(take)
+            .ToListAsync();
+        var ids = reviews.Where(review => review.ResolvedAnimeId is not null).Select(review => review.ResolvedAnimeId!.Value).Distinct().ToList();
+        var anime = await db.Animes.Include(item => item.Season).Where(item => ids.Contains(item.Id)).ToDictionaryAsync(item => item.Id);
+        return reviews.Select(review => new AutoResolvedReviewItem
+        {
+            Review = review,
+            Incoming = JsonSerializer.Deserialize<AnimeImportSnapshot>(review.PayloadJson) ?? new(),
+            Resolved = review.ResolvedAnimeId is int id ? anime.GetValueOrDefault(id) : null
+        }).ToList();
+    }
+
+    public Task<int> GetAutoResolvedCountAsync() =>
+        db.PendingAnimeReviews.CountAsync(review => review.AutoResolved && (review.Status == "Merged" || review.Status == "Created"));
+
+    /// <summary>Returns null when undone, otherwise why it could not be.</summary>
+    public Task<string?> UndoAutomaticResolutionAsync(int reviewId) => cache.UndoAutomaticResolutionAsync(reviewId);
+
+    public Task<MatchingSettings> GetMatchingSettingsAsync() => MatchingSettings.LoadAsync(db);
+
+    public Task SaveMatchingSettingsAsync(MatchingSettings settings) => MatchingSettings.SaveAsync(db, settings);
 
     public async Task<int> ResolveAsync(IEnumerable<PendingAnimeReviewItem> items, string decision)
     {
@@ -138,6 +170,14 @@ public sealed class PendingAnimeReviewItem
     public List<Anime> Candidates { get; init; } = [];
     public Dictionary<int, CandidateMatch> Matches { get; init; } = [];
     public CandidateMatch? BestMatch => Candidates.Count > 0 ? Matches.GetValueOrDefault(Candidates[0].Id) : null;
+    public MatchSuggestion? Suggestion { get; init; }
+}
+
+public sealed class AutoResolvedReviewItem
+{
+    public PendingAnimeReview Review { get; init; } = null!;
+    public AnimeImportSnapshot Incoming { get; init; } = new();
+    public Anime? Resolved { get; init; }
 }
 
 public sealed class AnimeNameReviewItem

@@ -34,10 +34,27 @@ public static class MatchScorer
     }
 
     public static string Confidence(CandidateMatch match) =>
-        match.Evidence.Any(item => item.Kind == MatchEvidenceKind.HardNegative) ? "Conflict"
+        HasHardNegative(match) ? "Conflict"
         : match.Score >= 80 ? "High"
         : match.Score >= 50 ? "Medium"
         : "Low";
+
+    /// <summary>
+    /// The decision band for a review's scored candidates, or null when a person
+    /// must decide. Create when every candidate has a hard conflict; merge when
+    /// exactly one candidate is conflict-free and it reaches the threshold.
+    /// </summary>
+    public static MatchSuggestion? Suggest(IReadOnlyCollection<CandidateMatch> matches, int mergeThreshold)
+    {
+        if (matches.Count == 0) return new("Create", null, "no catalogue candidate remains");
+        var conflictFree = matches.Where(match => !HasHardNegative(match)).ToList();
+        if (conflictFree.Count == 0) return new("Create", null, "every candidate has a hard conflict");
+        if (conflictFree.Count == 1 && conflictFree[0].Score >= mergeThreshold)
+            return new("Merge", conflictFree[0].AnimeId, $"the only conflict-free candidate scored {conflictFree[0].Score} (threshold {mergeThreshold})");
+        return null;
+    }
+
+    private static bool HasHardNegative(CandidateMatch match) => match.Evidence.Any(item => item.Kind == MatchEvidenceKind.HardNegative);
 
     private static void AddIdEvidence(Anime source, Anime candidate, List<MatchEvidence> evidence)
     {
@@ -163,3 +180,6 @@ public sealed class CandidateMatch
     public int Score { get; init; }
     public List<MatchEvidence> Evidence { get; init; } = [];
 }
+
+/// <summary>An automatic decision band: "Merge" into <see cref="AnimeId"/>, or "Create" as new.</summary>
+public sealed record MatchSuggestion(string Decision, int? AnimeId, string Explanation);

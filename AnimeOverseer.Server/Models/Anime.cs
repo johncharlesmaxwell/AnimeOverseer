@@ -173,6 +173,24 @@ public class PendingAnimeReview
     public string Status { get; set; } = "Pending"; // Pending, Merged, Created, Deferred
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
     public DateTime? ResolvedAt { get; set; }
+    // The catalogue row a Merge or Create produced.
+    public int? ResolvedAnimeId { get; set; }
+    // True when the decision was made without a person, so it can be undone.
+    public bool AutoResolved { get; set; }
+    // The merged row as it was before a Merge, for undo. See AnimeRestorePoint.
+    public string? PreMergeSnapshotJson { get; set; }
+    // Set when a person undoes an automatic decision; automation then leaves it alone.
+    public bool AutoDecisionUndone { get; set; }
+}
+
+/// <summary>A merge target's own state before a review merged an import into it.</summary>
+public class AnimeRestorePoint
+{
+    public AnimeImportSnapshot Fields { get; set; } = new();
+    public string? LocalImagePath { get; set; }
+    public int? PreferredImageId { get; set; }
+    public List<string> Aliases { get; set; } = [];
+    public List<int> ImageIds { get; set; } = [];
 }
 
 /// <summary>Serializable import fields needed to safely resume a reviewed decision.</summary>

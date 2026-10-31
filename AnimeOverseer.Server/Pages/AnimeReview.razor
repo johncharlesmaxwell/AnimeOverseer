@@ -10,8 +10,44 @@
 
 <div class="review-page">
     <div class="review-heading"><div><h1>Review catalogue matches</h1><p>Only title or alias matches are held here. Provider-ID matches continue automatically. Sorted by match score, most confident first.</p></div><div class="review-heading-actions"><button class="review-check-ids" @onclick="QueueProviderIdCheckAsync" disabled="@_queueingCheck" title="Fill missing AniList/MAL IDs from AniList, then resolve reviews whose IDs now match or rule out every candidate">Check provider IDs</button><a href="/settings" class="review-back">← Settings</a></div></div>
+    <details class="review-automation" open="@(_settings?.Mode == AutoDecisionMode.Apply)">
+        <summary>Automatic decisions: <strong>@ModeLabel(_settings?.Mode)</strong></summary>
+        <p>Create as new when every candidate has a hard conflict (provider IDs, a franchise relation, movie vs series, or start dates a year apart). Merge when exactly one candidate is conflict-free and scores at least the threshold.</p>
+        <div class="review-automation-form">
+            <label>Mode <select @bind="_editMode"><option value="@AutoDecisionMode.Off">Off</option><option value="@AutoDecisionMode.Suggest">Suggest only (dry run)</option><option value="@AutoDecisionMode.Apply">Apply automatically</option></select></label>
+            <label>Merge threshold <input type="number" min="@MatchingSettings.MinimumMergeThreshold" max="100" @bind="_editThreshold" /></label>
+            <button @onclick="SaveSettingsAsync">Save</button>
+            @if (!string.IsNullOrEmpty(_settingsNotice)) { <span>@_settingsNotice</span> }
+        </div>
+        <p class="review-muted">Applied after each import and each provider ID check. Existing suggestions apply the next time you run Check provider IDs.</p>
+    </details>
+    <div class="review-tabs" role="tablist">
+        <button role="tab" class="@(_tab == "pending" ? "active" : "")" aria-selected="@(_tab == "pending")" @onclick='() => _tab = "pending"'>Needs review (@(_items?.Count ?? 0))</button>
+        <button role="tab" class="@(_tab == "auto" ? "active" : "")" aria-selected="@(_tab == "auto")" @onclick="ShowAutoResolvedAsync">Auto-resolved (@_autoResolvedCount)</button>
+    </div>
     @if (_checkJobId is int checkJobId) { <p class="review-notice">Provider ID check queued — <a href="/jobs/@checkJobId">follow job #@checkJobId</a>. Reload this page when it finishes.</p> } else if (!string.IsNullOrEmpty(_checkNotice)) { <p class="review-notice">@_checkNotice</p> }
-    @if (_items is null) { <p class="review-muted">Loading review queue…</p> }
+    @if (_tab == "auto")
+    {
+        @if (!string.IsNullOrEmpty(_undoNotice)) { <p class="review-notice">@_undoNotice</p> }
+        @if (_autoResolved is null) { <p class="review-muted">Loading automatic decisions…</p> }
+        else if (_autoResolved.Count == 0) { <div class="review-empty"><h3>No automatic decisions yet</h3><p>Reviews resolved by provider IDs or decision bands are listed here, newest first, so you can undo them.</p></div> }
+        else
+        {
+            <div class="review-list">
+                @foreach (var item in _autoResolved)
+                {
+                    <div class="review-card review-card-static">
+                        <span class="review-decision review-decision-@item.Review.Status.ToLowerInvariant()">@(item.Review.Status == "Merged" ? "Merged" : "Created")</span>
+                        <div class="review-incoming review-media"><div><span class="review-label">Incoming</span><h3>@item.Incoming.Title</h3><p>@FormatDate(item.Incoming.StartDate) · @SourceLinks(item.Incoming.MALId, item.Incoming.AniListId)</p></div></div>
+                        <div class="review-arrow">→</div>
+                        <div class="review-candidate review-media"><div><span class="review-label">@(item.Review.Status == "Merged" ? "Merged into" : "Created as")</span>@if (item.Resolved is { } resolved) { <h3><a href="/anime/@resolved.Id">@resolved.Title</a></h3><p>@FormatDate(resolved.StartDate) · @SourceLinks(resolved.MALId, resolved.AniListId)</p> } else { <p>The catalogue record no longer exists.</p> }<p>@item.Review.ResolvedAt?.ToLocalTime().ToString("d MMM yyyy HH:mm")</p></div></div>
+                        <div class="review-reason review-reason-actions"><span>@item.Review.Reason</span><button @onclick="() => UndoAsync(item.Review.Id)" disabled="@_working" title="@(item.Review.Status == "Merged" ? "Restore the record as it was before the merge" : "Delete the created record") and return this to Needs review">Undo</button></div>
+                    </div>
+                }
+            </div>
+        }
+    }
+    else if (_items is null) { <p class="review-muted">Loading review queue…</p> }
     else if (_items.Count == 0) { <div class="review-empty"><h3>Nothing needs review</h3><p>Future uncertain title matches will appear here instead of changing catalogue records.</p></div> }
     else
     {
@@ -34,6 +70,7 @@
                         var confidence = MatchScorer.Confidence(best);
                         <div class="review-evidence">
                             <span class="review-score review-score-@confidence.ToLowerInvariant()" title="Match score for the @(item.Candidates.Count > 1 ? "top-ranked" : "shown") candidate">@confidence · @best.Score</span>
+                            @if (item.Suggestion is { } suggestion) { <span class="review-suggestion" title="@suggestion.Explanation">@(_settings?.Mode == AutoDecisionMode.Apply ? "Will" : "Would") @(suggestion.Decision == "Merge" ? "auto-merge" : "auto-create")</span> }
                             @foreach (var evidence in best.Evidence.Where(evidence => evidence.Kind != MatchEvidenceKind.Neutral))
                             {
                                 <span class="review-evidence-item review-evidence-@evidence.Kind.ToString().ToLowerInvariant()">@EvidenceSign(evidence) @evidence.Detail</span>
@@ -56,6 +93,42 @@
     private bool _queueingCheck;
     private int? _checkJobId;
     private string? _checkNotice;
+    private string _tab = "pending";
+    private List<AutoResolvedReviewItem>? _autoResolved;
+    private int _autoResolvedCount;
+    private string? _undoNotice;
+    private MatchingSettings? _settings;
+    private AutoDecisionMode _editMode;
+    private int _editThreshold;
+    private string? _settingsNotice;
+    private async Task SaveSettingsAsync()
+    {
+        await ReviewService.SaveMatchingSettingsAsync(new MatchingSettings(_editMode, _editThreshold));
+        await LoadSettingsAsync();
+        _settingsNotice = "Saved.";
+        await ReloadAsync();
+    }
+    private async Task LoadSettingsAsync()
+    {
+        _settings = await ReviewService.GetMatchingSettingsAsync();
+        _editMode = _settings.Mode;
+        _editThreshold = _settings.MergeThreshold;
+    }
+    private async Task ShowAutoResolvedAsync()
+    {
+        _tab = "auto";
+        _autoResolved = await ReviewService.GetAutoResolvedAsync();
+    }
+    private async Task UndoAsync(int reviewId)
+    {
+        _working = true;
+        var failure = await ReviewService.UndoAutomaticResolutionAsync(reviewId);
+        _undoNotice = failure ?? "Undone. The review is back in Needs review and automation will leave it to you.";
+        _autoResolved = await ReviewService.GetAutoResolvedAsync();
+        await ReloadAsync();
+        _working = false;
+    }
+    private static string ModeLabel(AutoDecisionMode? mode) => mode switch { AutoDecisionMode.Off => "off", AutoDecisionMode.Apply => "applied automatically", AutoDecisionMode.Suggest => "suggest only (dry run)", _ => "…" };
     private async Task QueueProviderIdCheckAsync()
     {
         _queueingCheck = true;
@@ -64,7 +137,11 @@
         _checkNotice = job is null ? "A provider ID check is already queued or running." : null;
         _queueingCheck = false;
     }
-    protected override async Task OnInitializedAsync() => await ReloadAsync();
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadSettingsAsync();
+        await ReloadAsync();
+    }
     private bool CanMergeSelection => _selected.Count > 0 && _items is not null && _items.Where(item => _selected.Contains(item.Review.Id)).All(item => item.Candidates.Count == 1);
     private bool AllSelected => _items is { Count: > 0 } && _items.All(item => _selected.Contains(item.Review.Id));
     private void SelectItem(int id, MouseEventArgs args)
@@ -98,7 +175,11 @@
         _working = true; var selectedItems = _items.Where(item => _selected.Contains(item.Review.Id)).ToList(); var count = await ReviewService.ResolveAsync(selectedItems, decision);
         _notice = $"{count} record{(count == 1 ? "" : "s")} {decision.ToLowerInvariant()}d."; ClearSelection(); await ReloadAsync(); _working = false;
     }
-    private async Task ReloadAsync() => _items = await ReviewService.GetPendingAsync();
+    private async Task ReloadAsync()
+    {
+        _items = await ReviewService.GetPendingAsync();
+        _autoResolvedCount = await ReviewService.GetAutoResolvedCountAsync();
+    }
     private static string FormatDate(DateTime? value) => value?.ToString("MMM yyyy") ?? "Unknown date";
     private static RenderFragment SourceLinks(int? malId, int? aniListId) => builder =>
     {
