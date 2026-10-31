@@ -11,6 +11,7 @@ using Xunit;
 
 namespace AnimeOverseer.Server.Tests;
 
+[Collection(AniListRateGateCollection.Name)]
 public sealed class SyncJobIntegrationTests : SqliteIntegrationTestBase
 {
     [Fact]
@@ -262,7 +263,8 @@ public sealed class SyncJobIntegrationTests : SqliteIntegrationTestBase
         {
             await using var check = CreateDb();
             return (await check.SyncJobs.SingleAsync()).Status == "Failed";
-        });
+        // The first AniList request may wait one rate-gate interval (2.25s).
+        }, TimeSpan.FromSeconds(10));
         await runner.StopAsync(CancellationToken.None);
 
         await using var saved = CreateDb();

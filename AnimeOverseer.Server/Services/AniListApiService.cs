@@ -95,6 +95,28 @@ public class AniListApiService(HttpClient httpClient, ILogger<AniListApiService>
         return media.ValueKind == JsonValueKind.Null ? null : MapFromAniList(media);
     }
 
+    /// <summary>
+    /// Resolves both provider IDs for one AniList or MAL ID, or null when AniList
+    /// has no such anime. Used to confirm catalogue identity without a title match.
+    /// </summary>
+    public async Task<ProviderIds?> GetProviderIdsAsync(int? aniListId, int? malId, CancellationToken ct = default)
+    {
+        var (query, variables) = aniListId is > 0
+            ? ("query ($id: Int!) { Media(id: $id, type: ANIME) { id idMal } }", new { id = aniListId.Value })
+            : malId is > 0
+                ? ("query ($id: Int!) { Media(idMal: $id, type: ANIME) { id idMal } }", new { id = malId.Value })
+                : throw new ArgumentException("An AniList or MAL ID is required.");
+        try
+        {
+            var media = (await QueryAsync(query, variables, ct)).GetProperty("Media");
+            return media.ValueKind == JsonValueKind.Null ? null : new ProviderIds(media.GetProperty("id").GetInt32(), GetInt(media, "idMal"));
+        }
+        catch (HttpRequestException ex) when (ex.StatusCode == System.Net.HttpStatusCode.NotFound)
+        {
+            return null;
+        }
+    }
+
     public async Task<List<(Anime Anime, string RelationType)>> GetRelationsAsync(int aniListId, CancellationToken ct = default)
     {
         var data = await QueryAsync("query ($id: Int!) { Media(id: $id, type: ANIME) { relations { edges { relationType node { " + MediaFields + " } } } } }", new { id = aniListId }, ct);
@@ -219,6 +241,11 @@ public class AniListApiService(HttpClient httpClient, ILogger<AniListApiService>
             Rating = GetInt(element, "averageScore") is int score ? score / 10m : null,
             Status = NormalizeStatus(GetString(element, "status")), StartDate = ParseDate(element, "startDate"), EndDate = ParseDate(element, "endDate")
         };
+        if (element.TryGetProperty("relations", out var relations) && relations.ValueKind == JsonValueKind.Object &&
+            relations.TryGetProperty("edges", out var edges) && edges.ValueKind == JsonValueKind.Array)
+            foreach (var edge in edges.EnumerateArray())
+                if (edge.TryGetProperty("node", out var node) && node.ValueKind == JsonValueKind.Object)
+                    anime.ProviderRelations.Add(new() { RelationType = GetString(edge, "relationType") ?? "RELATED", AniListId = GetInt(node, "id"), MalId = GetInt(node, "idMal") });
         if (element.TryGetProperty("genres", out var genres)) foreach (var genre in genres.EnumerateArray()) if (genre.GetString() is { Length: > 0 } name) anime.AnimeGenres.Add(new() { Genre = new() { Name = name } });
         if (element.TryGetProperty("tags", out var tags)) foreach (var tag in tags.EnumerateArray())
         {
@@ -242,3 +269,6 @@ public class AniListApiService(HttpClient httpClient, ILogger<AniListApiService>
     private static DateTime? ParseDate(JsonElement el, string name) { if (!el.TryGetProperty(name, out var d) || GetInt(d, "year") is not int y || GetInt(d, "month") is not int m || GetInt(d, "day") is not int day) return null; try { return new DateTime(y, m, day); } catch { return null; } }
     private static string? NormalizeStatus(string? status) => status switch { "RELEASING" => "Currently Airing", "FINISHED" => "Finished", "NOT_YET_RELEASED" => "Not Yet Aired", "CANCELLED" => "Cancelled", "HIATUS" => "Hiatus", _ => status?.Replace('_', ' ') };
 }
+
+/// <summary>The AniList and MAL identifiers AniList holds for one anime.</summary>
+public sealed record ProviderIds(int AniListId, int? MalId);

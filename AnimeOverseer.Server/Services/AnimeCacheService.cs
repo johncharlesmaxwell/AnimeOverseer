@@ -447,11 +447,21 @@ public class AnimeCacheService(AnimeDbContext db, AniListApiService aniList, Jik
                 var candidates = FindNameCandidates(existingByName, existingRows, source);
                 if (candidates.Count > 0)
                 {
-                    // A title is search evidence, not an identity.  This avoids a
-                    // franchise synonym (for example a season-one title attached to
-                    // season four) silently overwriting a different catalogue row.
-                    await QueueForReviewAsync(source, fixedSeasonId, candidates, ct);
-                    continue;
+                    // Before asking a person, let AniList bridge the provider IDs:
+                    // a shared ID confirms the row, a differing one rules it out.
+                    await CompleteProviderIdsAsync(source, candidates, ct);
+                    if (!TryGetByProviderIds(existing, source, out target))
+                    {
+                        candidates = ViableCandidates(source, candidates);
+                        if (candidates.Count > 0)
+                        {
+                            // A title is search evidence, not an identity.  This avoids a
+                            // franchise synonym (for example a season-one title attached to
+                            // season four) silently overwriting a different catalogue row.
+                            await QueueForReviewAsync(source, fixedSeasonId, candidates, ct);
+                            continue;
+                        }
+                    }
                 }
                 if (target is null)
                 {
@@ -526,15 +536,10 @@ public class AnimeCacheService(AnimeDbContext db, AniListApiService aniList, Jik
              (source.MALId.HasValue && source.MALId.Value > 0 && review.SourceMalId == source.MALId)), ct);
         if (isDuplicate) return;
 
-        var reason = candidates.Any(candidate => HasConflictingIds(source, candidate))
-            ? "Provider IDs conflict with a title/alias candidate"
-            : candidates.Count > 1
-                ? "More than one title/alias candidate was found"
-                : "Title or alias match needs confirmation";
-        var matches = candidates.DistinctBy(candidate => candidate.Id)
-            .Select(candidate => MatchScorer.Score(source, candidate))
-            .OrderByDescending(match => match.Score)
-            .ToList();
+        var reason = candidates.Count > 1
+            ? "More than one title/alias candidate was found"
+            : "Title or alias match needs confirmation";
+        var matches = ScoreCandidates(source, candidates);
         db.PendingAnimeReviews.Add(new PendingAnimeReview
         {
             SeasonId = fixedSeasonId ?? await UnknownSeasonIdAsync(ct),
@@ -549,6 +554,131 @@ public class AnimeCacheService(AnimeDbContext db, AniListApiService aniList, Jik
         });
         await db.SaveChangesAsync(ct);
     }
+
+    private static List<CandidateMatch> ScoreCandidates(Anime source, IEnumerable<Anime> candidates)
+        => candidates.DistinctBy(candidate => candidate.Id)
+            .Select(candidate => MatchScorer.Score(source, candidate))
+            .OrderByDescending(match => match.Score)
+            .ToList();
+
+    /// <summary>
+    /// Fills one catalogue row's missing AniList or MAL ID from AniList. An ID that
+    /// already belongs to another row is reported rather than written, since the two
+    /// rows are then likely duplicates that need a person to reconcile.
+    /// </summary>
+    public async Task<ProviderIdBackfillResult> BackfillProviderIdsAsync(int animeId, CancellationToken ct = default)
+    {
+        var anime = await db.Animes.FirstOrDefaultAsync(item => item.Id == animeId, ct);
+        if (anime is null || (anime.AniListId is > 0) == (anime.MALId is > 0)) return new(ProviderIdBackfillOutcome.Skipped);
+        var ids = await aniList.GetProviderIdsAsync(anime.AniListId, anime.MALId, ct);
+        var aniListId = anime.AniListId is > 0 ? null : ids?.AniListId;
+        var malId = anime.MALId is > 0 ? null : ids?.MalId;
+        if (aniListId is not > 0 && malId is not > 0) return new(ProviderIdBackfillOutcome.NotFound);
+
+        var others = db.Animes.Where(other => other.Id != anime.Id);
+        var duplicateId = aniListId is > 0
+            ? await others.Where(other => other.AniListId == aniListId).Select(other => (int?)other.Id).FirstOrDefaultAsync(ct)
+            : await others.Where(other => other.MALId == malId).Select(other => (int?)other.Id).FirstOrDefaultAsync(ct);
+        if (duplicateId is int duplicate) return new(ProviderIdBackfillOutcome.Duplicate, duplicate);
+
+        if (aniListId is > 0) anime.AniListId = aniListId;
+        if (malId is > 0) anime.MALId = malId;
+        await db.SaveChangesAsync(ct);
+        return new(ProviderIdBackfillOutcome.Filled);
+    }
+
+    /// <summary>
+    /// Re-applies provider-ID bridging to a pending review. A shared ID merges it,
+    /// IDs or relations ruling out every candidate create it, and otherwise the
+    /// review keeps only its viable candidates with refreshed scores.
+    /// </summary>
+    public async Task<PendingReviewRecheckOutcome> RecheckPendingReviewAsync(int reviewId, CancellationToken ct = default)
+    {
+        var review = await db.PendingAnimeReviews.FirstOrDefaultAsync(item => item.Id == reviewId && item.Status == "Pending", ct);
+        var snapshot = review is null ? null : JsonSerializer.Deserialize<AnimeImportSnapshot>(review.PayloadJson);
+        if (review is null || snapshot is null) return PendingReviewRecheckOutcome.Unchanged;
+        var source = FromSnapshot(snapshot);
+        var candidateIds = JsonSerializer.Deserialize<List<int>>(review.CandidateAnimeIdsJson) ?? [];
+        var candidates = await db.Animes.Include(item => item.TitleAliases).Where(item => candidateIds.Contains(item.Id)).ToListAsync(ct);
+
+        await CompleteProviderIdsAsync(source, candidates, ct);
+        snapshot.AniListId = source.AniListId;
+        snapshot.MALId = source.MALId;
+        review.PayloadJson = JsonSerializer.Serialize(snapshot);
+
+        var confirmedId = source.AniListId is > 0
+            ? await db.Animes.Where(item => item.AniListId == source.AniListId).Select(item => (int?)item.Id).FirstOrDefaultAsync(ct)
+            : null;
+        if (confirmedId is null && source.MALId is > 0)
+            confirmedId = await db.Animes.Where(item => item.MALId == source.MALId).Select(item => (int?)item.Id).FirstOrDefaultAsync(ct);
+        if (confirmedId is int confirmed)
+        {
+            // The confirmed row may not have been a title candidate.
+            if (!candidateIds.Contains(confirmed)) review.CandidateAnimeIdsJson = JsonSerializer.Serialize(candidateIds.Append(confirmed));
+            await db.SaveChangesAsync(ct);
+            return await ResolveAutomaticallyAsync(review, "Merge", confirmed, "provider IDs matched", ct)
+                ? PendingReviewRecheckOutcome.Merged : PendingReviewRecheckOutcome.Unchanged;
+        }
+
+        var viable = ViableCandidates(source, candidates);
+        if (viable.Count == 0)
+        {
+            await db.SaveChangesAsync(ct);
+            return await ResolveAutomaticallyAsync(review, "Create", null, "provider IDs or relations ruled out every candidate", ct)
+                ? PendingReviewRecheckOutcome.Created : PendingReviewRecheckOutcome.Unchanged;
+        }
+
+        var matches = ScoreCandidates(source, viable);
+        review.CandidateAnimeIdsJson = JsonSerializer.Serialize(viable.Select(candidate => candidate.Id));
+        review.MatchScore = matches[0].Score;
+        review.MatchEvidenceJson = JsonSerializer.Serialize(matches);
+        await db.SaveChangesAsync(ct);
+        return viable.Count < candidateIds.Count ? PendingReviewRecheckOutcome.Narrowed : PendingReviewRecheckOutcome.Unchanged;
+    }
+
+    private async Task<bool> ResolveAutomaticallyAsync(PendingAnimeReview review, string decision, int? candidateId, string because, CancellationToken ct)
+    {
+        if (!await ResolvePendingReviewAsync(review.Id, decision, candidateId, ct)) return false;
+        review.Reason = $"{review.Reason} · resolved automatically: {because}";
+        await db.SaveChangesAsync(ct);
+        return true;
+    }
+
+    /// <summary>
+    /// Fills the provider ID the source lacks from AniList, but only when a candidate
+    /// carries that ID type; otherwise the comparison is already decided without it.
+    /// A failed lookup leaves the source unchanged so the match falls back to review.
+    /// </summary>
+    private async Task CompleteProviderIdsAsync(Anime source, IEnumerable<Anime> candidates, CancellationToken ct)
+    {
+        var missingAniList = source.AniListId is not > 0;
+        var missingMal = source.MALId is not > 0;
+        if (!candidates.Any(candidate => (missingAniList && candidate.AniListId is > 0) || (missingMal && candidate.MALId is > 0))) return;
+        ProviderIds? ids;
+        try
+        {
+            ids = await aniList.GetProviderIdsAsync(source.AniListId, source.MALId, ct);
+        }
+        catch (Exception) when (!ct.IsCancellationRequested)
+        {
+            return;
+        }
+        if (ids is null) return;
+        if (missingAniList) source.AniListId = ids.AniListId;
+        if (missingMal && ids.MalId is > 0) source.MALId = ids.MalId;
+    }
+
+    private static bool TryGetByProviderIds(Dictionary<string, Anime> existing, Anime source, out Anime target)
+    {
+        if (source.AniListId is > 0 && existing.TryGetValue($"a:{source.AniListId}", out target!)) return true;
+        if (source.MALId is > 0 && existing.TryGetValue($"m:{source.MALId}", out target!)) return true;
+        target = null!;
+        return false;
+    }
+
+    /// <summary>Candidates that provider IDs or franchise relations have not ruled out.</summary>
+    private static List<Anime> ViableCandidates(Anime source, IEnumerable<Anime> candidates)
+        => candidates.Where(candidate => !HasConflictingIds(source, candidate) && !MatchScorer.IsRelated(source, candidate)).ToList();
 
     private static bool HasConflictingIds(Anime source, Anime candidate)
         => (source.AniListId is > 0 && candidate.AniListId is > 0 && source.AniListId != candidate.AniListId) ||
@@ -567,7 +697,7 @@ public class AnimeCacheService(AnimeDbContext db, AniListApiService aniList, Jik
         Genres = source.AnimeGenres.Select(x => x.Genre.Name).ToList(),
         Themes = source.AnimeThemes.Select(x => x.Theme.Name).ToList(),
         Demographics = source.AnimeDemographics.Select(x => x.Demographic.Name).ToList(),
-        SourceImages = source.SourceImages
+        SourceImages = source.SourceImages, ProviderRelations = source.ProviderRelations
     };
 
     internal static Anime FromSnapshot(AnimeImportSnapshot source) => new()
@@ -577,6 +707,7 @@ public class AnimeCacheService(AnimeDbContext db, AniListApiService aniList, Jik
         AlternativeTitles = source.AlternativeTitles, Synopsis = source.Synopsis, ImageUrl = source.ImageUrl,
         Type = source.Type, Episodes = source.Episodes, Duration = source.Duration, Rating = source.Rating,
         Status = source.Status, StartDate = source.StartDate, EndDate = source.EndDate, SourceImages = source.SourceImages,
+        ProviderRelations = source.ProviderRelations,
         AnimeGenres = source.Genres.Select(name => new AnimeGenre { Genre = new Genre { Name = name } }).ToList(),
         AnimeThemes = source.Themes.Select(name => new AnimeTheme { Theme = new Theme { Name = name } }).ToList(),
         AnimeDemographics = source.Demographics.Select(name => new AnimeDemographic { Demographic = new Demographic { Name = name } }).ToList()
@@ -711,3 +842,9 @@ public class AnimeCacheService(AnimeDbContext db, AniListApiService aniList, Jik
     private async Task<int> UnknownSeasonIdAsync(CancellationToken ct) => (await GetOrCreateSeasonAsync("unknown", 0, ct)).Id;
     private static string SeasonName(DateTime? date) => (date?.Month ?? DateTime.UtcNow.Month) switch { <=3=>"winter",<=6=>"spring",<=9=>"summer",_=>"fall" };
 }
+
+public enum ProviderIdBackfillOutcome { Filled, NotFound, Duplicate, Skipped }
+
+public sealed record ProviderIdBackfillResult(ProviderIdBackfillOutcome Outcome, int? DuplicateAnimeId = null);
+
+public enum PendingReviewRecheckOutcome { Unchanged, Narrowed, Merged, Created }

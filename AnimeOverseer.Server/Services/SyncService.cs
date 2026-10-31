@@ -377,6 +377,98 @@ public class SyncService(AnimeDbContext db, IServiceScopeFactory scopeFactory, A
         await db.SaveChangesAsync(ct);
     }
 
+    /// <summary>
+    /// Fills missing AniList/MAL IDs across the catalogue from AniList, then rechecks
+    /// pending catalogue reviews so newly confirmed or ruled-out matches resolve.
+    /// </summary>
+    public async Task RunProviderIdsSyncAsync(SyncJob job, CancellationToken ct)
+    {
+        var syncedIds = GetSyncedIds(job);
+        var animeIds = await db.Animes.AsNoTracking()
+            .Where(anime => (anime.AniListId != null && anime.AniListId > 0 && (anime.MALId == null || anime.MALId <= 0)) ||
+                            (anime.MALId != null && anime.MALId > 0 && (anime.AniListId == null || anime.AniListId <= 0)))
+            .OrderBy(anime => anime.Id).Select(anime => anime.Id).ToListAsync(ct);
+        var reviewIds = await db.PendingAnimeReviews.AsNoTracking()
+            .Where(review => review.Status == "Pending")
+            .OrderBy(review => review.Id).Select(review => review.Id).ToListAsync(ct);
+        job.TotalCount = animeIds.Count + reviewIds.Count;
+        Log(job, $"Provider ID check started — {animeIds.Count:N0} anime missing an AniList or MAL ID, {reviewIds.Count:N0} pending reviews");
+        await db.SaveChangesAsync(ct);
+
+        var failures = new ImportFailures("AniList provider ID", logger, db, job);
+        var backfill = new Dictionary<ProviderIdBackfillOutcome, int>();
+        foreach (var animeId in animeIds)
+        {
+            ct.ThrowIfCancellationRequested();
+            try
+            {
+                using var cacheScope = scopeFactory.CreateScope();
+                var cache = cacheScope.ServiceProvider.GetRequiredService<AnimeCacheService>();
+                var result = await cache.BackfillProviderIdsAsync(animeId, ct);
+                backfill[result.Outcome] = backfill.GetValueOrDefault(result.Outcome) + 1;
+                if (result.Outcome == ProviderIdBackfillOutcome.Filled) syncedIds.Add(animeId);
+                if (result.DuplicateAnimeId is int duplicate)
+                    Log(job, $"Anime #{animeId} and #{duplicate} resolve to the same provider anime; left unchanged as likely duplicates", "Warning");
+                failures.RecordSuccess();
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                failures.Record(animeId, ex);
+            }
+
+            job.SyncedAnimeIds = JsonSerializer.Serialize(syncedIds);
+            job.ProcessedCount++;
+            if (job.ProcessedCount % 20 == 0) Log(job, $"Progress: {job.ProcessedCount:N0} / {job.TotalCount:N0}{failures.ProgressSuffix}");
+            if (failures.CircuitBreakerReason(job.ProcessedCount) is { } circuitBreakerReason)
+            {
+                Log(job, circuitBreakerReason, "Error");
+                await db.SaveChangesAsync(ct);
+                throw new InvalidOperationException(circuitBreakerReason);
+            }
+            await db.SaveChangesAsync(ct);
+        }
+        if (animeIds.Count > 0)
+            Log(job, $"Provider IDs filled for {backfill.GetValueOrDefault(ProviderIdBackfillOutcome.Filled):N0} anime; " +
+                     $"{backfill.GetValueOrDefault(ProviderIdBackfillOutcome.NotFound):N0} not found on AniList; " +
+                     $"{backfill.GetValueOrDefault(ProviderIdBackfillOutcome.Duplicate):N0} likely duplicates", "Success");
+
+        var rechecked = new Dictionary<PendingReviewRecheckOutcome, int>();
+        foreach (var reviewId in reviewIds)
+        {
+            ct.ThrowIfCancellationRequested();
+            try
+            {
+                using var cacheScope = scopeFactory.CreateScope();
+                var cache = cacheScope.ServiceProvider.GetRequiredService<AnimeCacheService>();
+                var outcome = await cache.RecheckPendingReviewAsync(reviewId, ct);
+                rechecked[outcome] = rechecked.GetValueOrDefault(outcome) + 1;
+                failures.RecordSuccess();
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "Provider ID recheck failed for pending review {ReviewId}", reviewId);
+                Log(job, $"Pending review #{reviewId} could not be rechecked: {ex.Message}", "Warning");
+            }
+
+            job.ProcessedCount++;
+            if (job.ProcessedCount % 20 == 0) Log(job, $"Progress: {job.ProcessedCount:N0} / {job.TotalCount:N0}{failures.ProgressSuffix}");
+            await db.SaveChangesAsync(ct);
+        }
+        Log(job, $"Pending reviews rechecked — {rechecked.GetValueOrDefault(PendingReviewRecheckOutcome.Merged):N0} merged, " +
+                 $"{rechecked.GetValueOrDefault(PendingReviewRecheckOutcome.Created):N0} created, " +
+                 $"{rechecked.GetValueOrDefault(PendingReviewRecheckOutcome.Narrowed):N0} narrowed, " +
+                 $"{rechecked.GetValueOrDefault(PendingReviewRecheckOutcome.Unchanged):N0} still need review", "Success");
+        await db.SaveChangesAsync(ct);
+    }
+
     public async Task RunRelationsSyncAsync(SyncJob job, CancellationToken ct)
     {
         var (years, seasons) = ParseJikanParams(job.Parameters);

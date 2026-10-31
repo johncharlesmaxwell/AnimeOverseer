@@ -45,7 +45,17 @@ public static class MatchScorer
             evidence.Add(HardNegative("AniList ID", $"Different AniList IDs ({source.AniListId} vs {candidate.AniListId})"));
         if (source.MALId is > 0 && candidate.MALId is > 0 && source.MALId != candidate.MALId)
             evidence.Add(HardNegative("MAL ID", $"Different MAL IDs ({source.MALId} vs {candidate.MALId})"));
+        if (RelationTo(source, candidate) is { } relation)
+            evidence.Add(HardNegative("Relation", $"Incoming lists this as its {relation.RelationType.Replace('_', ' ').ToLowerInvariant()}"));
     }
+
+    /// <summary>True when the source's provider lists the candidate as a separate franchise entry.</summary>
+    public static bool IsRelated(Anime source, Anime candidate) => RelationTo(source, candidate) is not null;
+
+    private static ProviderRelation? RelationTo(Anime source, Anime candidate)
+        => source.ProviderRelations.FirstOrDefault(relation =>
+            (relation.AniListId is > 0 && relation.AniListId == candidate.AniListId) ||
+            (relation.MalId is > 0 && relation.MalId == candidate.MALId));
 
     private static void AddTitleEvidence(Anime source, Anime candidate, List<MatchEvidence> evidence)
     {

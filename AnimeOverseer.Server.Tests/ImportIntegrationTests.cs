@@ -48,7 +48,8 @@ public sealed class ImportIntegrationTests : SqliteIntegrationTestBase
     {
         await using var db = CreateDb();
         var season = await AddSeasonAsync(db);
-        db.Animes.AddRange(new Anime { AniListId = 1, Title = "First", SeasonId = season.Id, TitleAliases = [new() { Title = "Shared Name" }] }, new Anime { AniListId = 2, Title = "Second", SeasonId = season.Id, TitleAliases = [new() { Title = "Shared Name" }] });
+        // Rows without provider IDs cannot be confirmed or ruled out by ID.
+        db.Animes.AddRange(new Anime { Title = "First", SeasonId = season.Id, TitleAliases = [new() { Title = "Shared Name" }] }, new Anime { Title = "Second", SeasonId = season.Id, TitleAliases = [new() { Title = "Shared Name" }] });
         await db.SaveChangesAsync();
         var incoming = Incoming(999, "Shared Name", false);
         await CreateCache(db).FetchAndCacheSeasonsFromAsync(2026, ["summer"], (_, _, _) => Task.FromResult(new List<Anime> { incoming }));
@@ -64,7 +65,7 @@ public sealed class ImportIntegrationTests : SqliteIntegrationTestBase
     {
         await using var db = CreateDb();
         var season = await AddSeasonAsync(db);
-        var existing = new Anime { AniListId = 81, Title = "Café: The Show II", SeasonId = season.Id };
+        var existing = new Anime { Title = "Café: The Show II", SeasonId = season.Id };
         db.Animes.Add(existing);
         await db.SaveChangesAsync();
         await CreateCache(db).FetchAndCacheSeasonsFromAsync(2026, ["fall"], (_, _, _) => Task.FromResult(new List<Anime> { Incoming(82, "Cafe The Show 2", false) }));
@@ -78,7 +79,7 @@ public sealed class ImportIntegrationTests : SqliteIntegrationTestBase
     {
         await using var db = CreateDb();
         var season = await AddSeasonAsync(db);
-        db.Animes.Add(new Anime { AniListId = 81, Title = "Orbit", Type = "TV", Episodes = 12, StartDate = new DateTime(2026, 4, 1), SeasonId = season.Id });
+        db.Animes.Add(new Anime { Title = "Orbit", Type = "TV", Episodes = 12, StartDate = new DateTime(2026, 4, 1), SeasonId = season.Id });
         await db.SaveChangesAsync();
         var incoming = Incoming(82, "Orbit", true);
         incoming.Type = "TV";
@@ -91,9 +92,9 @@ public sealed class ImportIntegrationTests : SqliteIntegrationTestBase
         Assert.NotNull(review.MatchScore);
         var match = Assert.Single(System.Text.Json.JsonSerializer.Deserialize<List<AnimeOverseer.Server.Services.CandidateMatch>>(review.MatchEvidenceJson!)!);
         Assert.Equal(review.MatchScore, match.Score);
-        // Different AniList IDs on both sides are a hard conflict even with agreeing metadata.
-        Assert.Equal("Conflict", AnimeOverseer.Server.Services.MatchScorer.Confidence(match));
-        Assert.Contains("\"HardNegative\"", review.MatchEvidenceJson);
+        Assert.Equal(100, match.Score);
+        Assert.Equal("High", AnimeOverseer.Server.Services.MatchScorer.Confidence(match));
+        Assert.Contains("\"Positive\"", review.MatchEvidenceJson);
     }
 
     [Fact]

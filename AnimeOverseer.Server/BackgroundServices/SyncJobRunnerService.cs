@@ -93,6 +93,7 @@ public class SyncJobRunnerService(
                 "TopUpcoming" => sync.RunTopUpcomingSyncAsync(job, jobCts.Token),
                 "Recommendations" => sync.RunRecommendationsSyncAsync(job, jobCts.Token),
                 "Relations" => sync.RunRelationsSyncAsync(job, jobCts.Token),
+                "ProviderIds" => sync.RunProviderIdsSyncAsync(job, jobCts.Token),
                 "Kitsu"   => sync.RunKitsuSyncAsync(job, jobCts.Token),
                 _         => Task.CompletedTask
             });

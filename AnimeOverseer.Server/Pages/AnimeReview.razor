@@ -4,11 +4,13 @@
 @using AnimeOverseer.Server.Models
 @using Microsoft.AspNetCore.Components.Web
 @inject AnimeReviewService ReviewService
+@inject SyncJobService SyncJobService
 
 <PageTitle>Review catalogue matches - AnimeOverseer</PageTitle>
 
 <div class="review-page">
-    <div class="review-heading"><div><h1>Review catalogue matches</h1><p>Only title or alias matches are held here. Provider-ID matches continue automatically. Sorted by match score, most confident first.</p></div><a href="/settings" class="review-back">← Settings</a></div>
+    <div class="review-heading"><div><h1>Review catalogue matches</h1><p>Only title or alias matches are held here. Provider-ID matches continue automatically. Sorted by match score, most confident first.</p></div><div class="review-heading-actions"><button class="review-check-ids" @onclick="QueueProviderIdCheckAsync" disabled="@_queueingCheck" title="Fill missing AniList/MAL IDs from AniList, then resolve reviews whose IDs now match or rule out every candidate">Check provider IDs</button><a href="/settings" class="review-back">← Settings</a></div></div>
+    @if (_checkJobId is int checkJobId) { <p class="review-notice">Provider ID check queued — <a href="/jobs/@checkJobId">follow job #@checkJobId</a>. Reload this page when it finishes.</p> } else if (!string.IsNullOrEmpty(_checkNotice)) { <p class="review-notice">@_checkNotice</p> }
     @if (_items is null) { <p class="review-muted">Loading review queue…</p> }
     else if (_items.Count == 0) { <div class="review-empty"><h3>Nothing needs review</h3><p>Future uncertain title matches will appear here instead of changing catalogue records.</p></div> }
     else
@@ -51,6 +53,17 @@
     private int? _anchorId;
     private bool _working;
     private string? _notice;
+    private bool _queueingCheck;
+    private int? _checkJobId;
+    private string? _checkNotice;
+    private async Task QueueProviderIdCheckAsync()
+    {
+        _queueingCheck = true;
+        var job = await SyncJobService.QueueAsync("ProviderIds");
+        _checkJobId = job?.Id;
+        _checkNotice = job is null ? "A provider ID check is already queued or running." : null;
+        _queueingCheck = false;
+    }
     protected override async Task OnInitializedAsync() => await ReloadAsync();
     private bool CanMergeSelection => _selected.Count > 0 && _items is not null && _items.Where(item => _selected.Contains(item.Review.Id)).All(item => item.Candidates.Count == 1);
     private bool AllSelected => _items is { Count: > 0 } && _items.All(item => _selected.Contains(item.Review.Id));

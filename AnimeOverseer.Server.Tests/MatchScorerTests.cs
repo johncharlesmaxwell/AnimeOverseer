@@ -76,6 +76,21 @@ public class MatchScorerTests
         Assert.Equal("Conflict", MatchScorer.Confidence(MatchScorer.Score(source, candidate)));
     }
 
+    [Fact]
+    public void Candidate_listed_as_a_relation_is_a_conflict()
+    {
+        var source = Anime("Orbit", Spring2026, "TV", 12);
+        source.ProviderRelations.Add(new ProviderRelation { RelationType = "SEQUEL", MalId = 77 });
+        var candidate = Anime("Orbit", Spring2026, "TV", 12);
+        candidate.MALId = 77;
+
+        var match = MatchScorer.Score(source, candidate);
+
+        Assert.True(MatchScorer.IsRelated(source, candidate));
+        Assert.Contains(match.Evidence, evidence => evidence.Signal == "Relation" && evidence.Detail.EndsWith("sequel"));
+        Assert.Equal("Conflict", MatchScorer.Confidence(match));
+    }
+
     [Theory]
     [InlineData("Frieren", 1)]
     [InlineData("Frieren Season 2", 2)]

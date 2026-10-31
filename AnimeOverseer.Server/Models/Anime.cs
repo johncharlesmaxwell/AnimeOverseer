@@ -116,6 +116,11 @@ public class Anime
 
     [NotMapped]
     public List<SourceImage> SourceImages { get; set; } = new();
+
+    // Franchise entries a provider lists as related to this import (sequels,
+    // prequels, side stories). A related entry is never the same anime.
+    [NotMapped]
+    public List<ProviderRelation> ProviderRelations { get; set; } = new();
 }
 
 /// <summary>A persisted AniList recommendation from one locally stored anime to another.</summary>
@@ -193,6 +198,15 @@ public class AnimeImportSnapshot
     public List<string> Themes { get; set; } = [];
     public List<string> Demographics { get; set; } = [];
     public List<SourceImage> SourceImages { get; set; } = [];
+    public List<ProviderRelation> ProviderRelations { get; set; } = [];
+}
+
+/// <summary>A provider's link from an imported anime to another entry in its franchise.</summary>
+public class ProviderRelation
+{
+    public string RelationType { get; set; } = string.Empty;
+    public int? AniListId { get; set; }
+    public int? MalId { get; set; }
 }
 
 public class SourceImage
