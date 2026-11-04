@@ -370,14 +370,21 @@ public class AnimeCacheService(AnimeDbContext db, AniListApiService aniList, Jik
     }
 
     /// <summary>Applies a human decision for a staged title/alias match.</summary>
-    public async Task<bool> ResolvePendingReviewAsync(int reviewId, string decision, int? candidateAnimeId = null, CancellationToken ct = default)
+    /// <summary>A person's decision on a pending review. Merge and Create are remembered for later imports.</summary>
+    public Task<bool> ResolvePendingReviewAsync(int reviewId, string decision, int? candidateAnimeId = null, CancellationToken ct = default)
+        => ResolveCoreAsync(reviewId, decision, candidateAnimeId, rememberDecision: true, ct);
+
+    private async Task<bool> ResolveCoreAsync(int reviewId, string decision, int? candidateAnimeId, bool rememberDecision, CancellationToken ct)
     {
         var review = await db.PendingAnimeReviews.FirstOrDefaultAsync(item => item.Id == reviewId && item.Status == "Pending", ct);
         if (review is null) return false;
         if (decision == "Defer")
         {
+            // Snooze rather than drop: the next import of this source after the
+            // snooze reopens this review instead of queueing a duplicate.
             review.Status = "Deferred";
             review.ResolvedAt = DateTime.UtcNow;
+            review.DeferredUntil = review.ResolvedAt.Value.AddDays((await MatchingSettings.LoadAsync(db, ct)).DeferDays);
             await db.SaveChangesAsync(ct);
             return true;
         }
@@ -415,9 +422,49 @@ public class AnimeCacheService(AnimeDbContext db, AniListApiService aniList, Jik
         review.Status = decision == "Create" ? "Created" : "Merged";
         review.ResolvedAt = DateTime.UtcNow;
         review.ResolvedAnimeId = target.Id;
+        if (rememberDecision)
+        {
+            // Creating says no candidate is this anime; merging says the chosen one is
+            // and the others are not.
+            var (aniListId, malId) = SourceIds(review, snapshot);
+            foreach (var candidateId in JsonSerializer.Deserialize<List<int>>(review.CandidateAnimeIdsJson) ?? [])
+                if (candidateId != target.Id) await RememberAsync(aniListId, malId, candidateId, isSame: false, decision, ct);
+            if (decision == "Merge") await RememberAsync(aniListId, malId, target.Id, isSame: true, decision, ct);
+        }
         await db.SaveChangesAsync(ct);
         return true;
     }
+
+    private static (int? AniListId, int? MalId) SourceIds(PendingAnimeReview review, AnimeImportSnapshot snapshot)
+        => (snapshot.AniListId is > 0 ? snapshot.AniListId : review.SourceAniListId, snapshot.MALId is > 0 ? snapshot.MALId : review.SourceMalId);
+
+    /// <summary>Records one same/different answer, replacing any earlier answer for the pair.</summary>
+    private async Task RememberAsync(int? aniListId, int? malId, int animeId, bool isSame, string origin, CancellationToken ct)
+    {
+        if (aniListId is not > 0 && malId is not > 0) return;
+        if (!await db.Animes.AnyAsync(anime => anime.Id == animeId, ct)) return;
+        var earlier = (await db.AnimeMatchDecisions.Where(decision => decision.AnimeId == animeId).ToListAsync(ct))
+            .Where(decision => decision.AppliesTo(aniListId, malId));
+        db.AnimeMatchDecisions.RemoveRange(earlier);
+        db.AnimeMatchDecisions.Add(new AnimeMatchDecision
+        {
+            SourceAniListId = aniListId is > 0 ? aniListId : null, SourceMalId = malId is > 0 ? malId : null,
+            AnimeId = animeId, IsSameAnime = isSame, Origin = origin
+        });
+    }
+
+    private async Task<List<AnimeMatchDecision>> DecisionsForAsync(int? aniListId, int? malId, CancellationToken ct)
+    {
+        if (aniListId is not > 0 && malId is not > 0) return [];
+        return await db.AnimeMatchDecisions.AsNoTracking()
+            .Where(decision => (aniListId > 0 && decision.SourceAniListId == aniListId) || (malId > 0 && decision.SourceMalId == malId))
+            .ToListAsync(ct);
+    }
+
+    /// <summary>Candidates a person has already said are a different anime from the source.</summary>
+    private static List<Anime> WithoutRejected(IEnumerable<AnimeMatchDecision> decisions, Anime source, IEnumerable<Anime> candidates)
+        => candidates.Where(candidate => !decisions.Any(decision =>
+            !decision.IsSameAnime && decision.AnimeId == candidate.Id && decision.AppliesTo(source.AniListId, source.MALId))).ToList();
 
     private async Task<List<int>> UpsertAsync(List<Anime> incoming, int? fixedSeasonId, bool preserveExistingSeason = false, CancellationToken ct = default)
     {
@@ -439,6 +486,7 @@ public class AnimeCacheService(AnimeDbContext db, AniListApiService aniList, Jik
             existingRows = await db.Animes.Include(a => a.TitleAliases).ToListAsync(ct);
         var existing = new Dictionary<string, Anime>();
         var queuedReviews = new List<PendingAnimeReview>();
+        List<AnimeMatchDecision>? decisions = null;
         var existingByName = new Dictionary<string, HashSet<Anime>>(StringComparer.Ordinal);
         foreach (var row in existingRows)
         {
@@ -451,8 +499,15 @@ public class AnimeCacheService(AnimeDbContext db, AniListApiService aniList, Jik
             if (!existing.TryGetValue(Key(source), out var target) &&
                 !(source.MALId is > 0 && existing.TryGetValue($"m:{source.MALId}", out target)))
             {
-                var candidates = FindNameCandidates(existingByName, existingRows, source);
-                if (candidates.Count > 0)
+                // A person's earlier answer for this source outranks title evidence.
+                decisions ??= await db.AnimeMatchDecisions.AsNoTracking().ToListAsync(ct);
+                var rememberedSame = decisions.FirstOrDefault(decision => decision.IsSameAnime && decision.AppliesTo(source.AniListId, source.MALId));
+                var candidates = rememberedSame is not null && existingRows.FirstOrDefault(row => row.Id == rememberedSame.AnimeId) is { } same
+                    ? [same]
+                    : WithoutRejected(decisions, source, FindNameCandidates(existingByName, existingRows, source));
+                if (rememberedSame is not null && candidates.Count == 1 && candidates[0].Id == rememberedSame.AnimeId)
+                    target = candidates[0];
+                else if (candidates.Count > 0)
                 {
                     // Before asking a person, let AniList bridge the provider IDs:
                     // a shared ID confirms the row, a differing one rules it out.
@@ -551,29 +606,31 @@ public class AnimeCacheService(AnimeDbContext db, AniListApiService aniList, Jik
 
     private async Task<PendingAnimeReview?> QueueForReviewAsync(Anime source, int? fixedSeasonId, IReadOnlyCollection<Anime> candidates, CancellationToken ct)
     {
-        var isDuplicate = await db.PendingAnimeReviews.AnyAsync(review =>
-            review.Status == "Pending" &&
-            ((source.AniListId.HasValue && source.AniListId.Value > 0 && review.SourceAniListId == source.AniListId) ||
-             (source.MALId.HasValue && source.MALId.Value > 0 && review.SourceMalId == source.MALId)), ct);
-        if (isDuplicate) return null;
+        var prior = await db.PendingAnimeReviews
+            .Where(review => (review.Status == "Pending" || review.Status == "Deferred") &&
+                ((source.AniListId.HasValue && source.AniListId.Value > 0 && review.SourceAniListId == source.AniListId) ||
+                 (source.MALId.HasValue && source.MALId.Value > 0 && review.SourceMalId == source.MALId)))
+            .OrderBy(review => review.Status == "Pending" ? 0 : 1).ThenByDescending(review => review.CreatedAt)
+            .FirstOrDefaultAsync(ct);
+        if (prior?.Status == "Pending" || prior?.DeferredUntil > DateTime.UtcNow) return null;
 
         var reason = candidates.Count > 1
             ? "More than one title/alias candidate was found"
             : "Title or alias match needs confirmation";
         var matches = ScoreCandidates(source, candidates);
-        var review = new PendingAnimeReview
-        {
-            SeasonId = fixedSeasonId ?? await UnknownSeasonIdAsync(ct),
-            SourceName = "Catalogue import",
-            SourceAniListId = source.AniListId,
-            SourceMalId = source.MALId,
-            Reason = reason,
-            PayloadJson = JsonSerializer.Serialize(ToSnapshot(source)),
-            CandidateAnimeIdsJson = JsonSerializer.Serialize(candidates.Select(candidate => candidate.Id).Distinct()),
-            MatchScore = matches.FirstOrDefault()?.Score,
-            MatchEvidenceJson = JsonSerializer.Serialize(matches),
-        };
-        db.PendingAnimeReviews.Add(review);
+        // An expired snooze reopens the deferred review with the fresh import.
+        var review = prior ?? new PendingAnimeReview { SeasonId = fixedSeasonId ?? await UnknownSeasonIdAsync(ct), SourceName = "Catalogue import" };
+        review.SourceAniListId = source.AniListId;
+        review.SourceMalId = source.MALId;
+        review.Reason = prior is null ? reason : $"{reason} · reopened after being deferred";
+        review.PayloadJson = JsonSerializer.Serialize(ToSnapshot(source));
+        review.CandidateAnimeIdsJson = JsonSerializer.Serialize(candidates.Select(candidate => candidate.Id).Distinct());
+        review.MatchScore = matches.FirstOrDefault()?.Score;
+        review.MatchEvidenceJson = JsonSerializer.Serialize(matches);
+        review.Status = "Pending";
+        review.ResolvedAt = null;
+        review.DeferredUntil = null;
+        if (prior is null) db.PendingAnimeReviews.Add(review);
         await db.SaveChangesAsync(ct);
         return review;
     }
@@ -625,6 +682,7 @@ public class AnimeCacheService(AnimeDbContext db, AniListApiService aniList, Jik
         var candidates = await db.Animes.Include(item => item.TitleAliases).Where(item => candidateIds.Contains(item.Id)).ToListAsync(ct);
 
         await CompleteProviderIdsAsync(source, candidates, ct);
+        candidates = WithoutRejected(await DecisionsForAsync(source.AniListId, source.MALId, ct), source, candidates);
         snapshot.AniListId = source.AniListId;
         snapshot.MALId = source.MALId;
         review.PayloadJson = JsonSerializer.Serialize(snapshot);
@@ -661,7 +719,8 @@ public class AnimeCacheService(AnimeDbContext db, AniListApiService aniList, Jik
         await db.SaveChangesAsync(ct);
         var applied = await ApplySuggestionAsync(review.Id, await MatchingSettings.LoadAsync(db, ct), ct);
         if (applied is not PendingReviewRecheckOutcome.Unchanged) return applied;
-        return viable.Count < candidateIds.Count ? PendingReviewRecheckOutcome.Narrowed : PendingReviewRecheckOutcome.Unchanged;
+        // With every candidate ruled out on an undone review, the list is left for the person.
+        return viable.Count > 0 && viable.Count < candidateIds.Count ? PendingReviewRecheckOutcome.Narrowed : PendingReviewRecheckOutcome.Unchanged;
     }
 
     /// <summary>
@@ -709,6 +768,9 @@ public class AnimeCacheService(AnimeDbContext db, AniListApiService aniList, Jik
             var target = await db.Animes.Include(item => item.TitleAliases).Include(item => item.Images).FirstOrDefaultAsync(item => item.Id == animeId, ct);
             if (target is null) return "The merged catalogue record no longer exists.";
             await RestoreAsync(target, restore, ct);
+            var snapshot = JsonSerializer.Deserialize<AnimeImportSnapshot>(review.PayloadJson) ?? new();
+            var (aniListId, malId) = SourceIds(review, snapshot);
+            await RememberAsync(aniListId, malId, animeId, isSame: false, "Undo", ct);
         }
 
         review.Status = "Pending";
@@ -755,7 +817,7 @@ public class AnimeCacheService(AnimeDbContext db, AniListApiService aniList, Jik
 
     private async Task<bool> ResolveAutomaticallyAsync(PendingAnimeReview review, string decision, int? candidateId, string because, CancellationToken ct)
     {
-        if (!await ResolvePendingReviewAsync(review.Id, decision, candidateId, ct)) return false;
+        if (!await ResolveCoreAsync(review.Id, decision, candidateId, rememberDecision: false, ct)) return false;
         review.AutoResolved = true;
         review.Reason = $"{review.Reason} · resolved automatically: {because}";
         await db.SaveChangesAsync(ct);

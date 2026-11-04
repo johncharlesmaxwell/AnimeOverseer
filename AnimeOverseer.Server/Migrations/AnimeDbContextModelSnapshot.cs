@@ -203,6 +203,42 @@ namespace AnimeOverseer.Server.Migrations
                     b.ToTable("AnimeRecommendations");
                 });
 
+            modelBuilder.Entity("AnimeOverseer.Server.Models.AnimeMatchDecision", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("AnimeId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<DateTime>("DecidedAt")
+                        .HasColumnType("TEXT");
+
+                    b.Property<bool>("IsSameAnime")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("Origin")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<int?>("SourceAniListId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int?>("SourceMalId")
+                        .HasColumnType("INTEGER");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("AnimeId");
+
+                    b.HasIndex("SourceAniListId");
+
+                    b.HasIndex("SourceMalId");
+
+                    b.ToTable("AnimeMatchDecisions");
+                });
+
             modelBuilder.Entity("AnimeOverseer.Server.Models.AnimeTitleAlias", b =>
                 {
                     b.Property<int>("Id")
@@ -510,6 +546,7 @@ namespace AnimeOverseer.Server.Migrations
                     b.Property<string>("PreMergeSnapshotJson").HasColumnType("TEXT");
                     b.Property<string>("Reason").IsRequired().HasColumnType("TEXT");
                     b.Property<DateTime?>("ResolvedAt").HasColumnType("TEXT");
+                    b.Property<DateTime?>("DeferredUntil").HasColumnType("TEXT");
                     b.Property<int?>("ResolvedAnimeId").HasColumnType("INTEGER");
                     b.Property<int>("SeasonId").HasColumnType("INTEGER");
                     b.Property<int?>("SourceAniListId").HasColumnType("INTEGER");
@@ -646,6 +683,15 @@ namespace AnimeOverseer.Server.Migrations
                     b.HasOne("AnimeOverseer.Server.Models.Anime", null)
                         .WithMany()
                         .HasForeignKey("SourceAnimeId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("AnimeOverseer.Server.Models.AnimeMatchDecision", b =>
+                {
+                    b.HasOne("AnimeOverseer.Server.Models.Anime", null)
+                        .WithMany()
+                        .HasForeignKey("AnimeId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
                 });

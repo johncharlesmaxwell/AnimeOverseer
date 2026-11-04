@@ -16,6 +16,7 @@
         <div class="review-automation-form">
             <label>Mode <select @bind="_editMode"><option value="@AutoDecisionMode.Off">Off</option><option value="@AutoDecisionMode.Suggest">Suggest only (dry run)</option><option value="@AutoDecisionMode.Apply">Apply automatically</option></select></label>
             <label>Merge threshold <input type="number" min="@MatchingSettings.MinimumMergeThreshold" max="100" @bind="_editThreshold" /></label>
+            <label title="A deferred review is not asked again until this many days have passed">Defer for (days) <input type="number" min="1" max="@MatchingSettings.MaximumDeferDays" @bind="_editDeferDays" /></label>
             <button @onclick="SaveSettingsAsync">Save</button>
             @if (!string.IsNullOrEmpty(_settingsNotice)) { <span>@_settingsNotice</span> }
         </div>
@@ -24,9 +25,47 @@
     <div class="review-tabs" role="tablist">
         <button role="tab" class="@(_tab == "pending" ? "active" : "")" aria-selected="@(_tab == "pending")" @onclick='() => _tab = "pending"'>Needs review (@(_items?.Count ?? 0))</button>
         <button role="tab" class="@(_tab == "auto" ? "active" : "")" aria-selected="@(_tab == "auto")" @onclick="ShowAutoResolvedAsync">Auto-resolved (@_autoResolvedCount)</button>
+        <button role="tab" class="@(_tab == "deferred" ? "active" : "")" aria-selected="@(_tab == "deferred")" @onclick="ShowDeferredAsync">Deferred (@_deferredCount)</button>
+        <button role="tab" class="@(_tab == "remembered" ? "active" : "")" aria-selected="@(_tab == "remembered")" @onclick="ShowRememberedAsync">Remembered (@_rememberedCount)</button>
     </div>
     @if (_checkJobId is int checkJobId) { <p class="review-notice">Provider ID check queued — <a href="/jobs/@checkJobId">follow job #@checkJobId</a>. Reload this page when it finishes.</p> } else if (!string.IsNullOrEmpty(_checkNotice)) { <p class="review-notice">@_checkNotice</p> }
-    @if (_tab == "auto")
+    @if (_tab == "deferred")
+    {
+        @if (_deferred is null) { <p class="review-muted">Loading deferred reviews…</p> }
+        else if (_deferred.Count == 0) { <div class="review-empty"><h3>Nothing is deferred</h3><p>Deferred reviews wait here until their snooze ends; the next import of that anime after that reopens them.</p></div> }
+        else
+        {
+            <div class="review-list">
+                @foreach (var item in _deferred)
+                {
+                    <div class="review-row">
+                        <div><h3>@item.Incoming.Title</h3><p>@FormatDate(item.Incoming.StartDate) · @SourceLinks(item.Incoming.MALId, item.Incoming.AniListId)</p></div>
+                        <span class="review-muted">@(item.Review.DeferredUntil is { } until ? (until > DateTime.UtcNow ? $"Snoozed until {until.ToLocalTime():d MMM yyyy}" : "Reopens on its next import") : "Reopens on its next import")</span>
+                        <button @onclick="() => ReopenAsync(item.Review.Id)" disabled="@_working">Review now</button>
+                    </div>
+                }
+            </div>
+        }
+    }
+    else if (_tab == "remembered")
+    {
+        <p class="review-muted">Answers you gave when merging or creating, or by undoing an automatic merge. Imports follow them instead of asking again. Forget one to let title matching consider that pair again.</p>
+        @if (_remembered is null) { <p class="review-muted">Loading remembered decisions…</p> }
+        else if (_remembered.Count == 0) { <div class="review-empty"><h3>Nothing remembered yet</h3><p>Merge or create a review and the answer is kept here.</p></div> }
+        else
+        {
+            <div class="review-list">
+                @foreach (var item in _remembered)
+                {
+                    <div class="review-row">
+                        <div><h3>@(item.SourceTitle ?? "Provider record") <span class="review-decision-inline review-decision-inline-@(item.Decision.IsSameAnime ? "same" : "different")">@(item.Decision.IsSameAnime ? "is" : "is not")</span> <a href="/anime/@item.Decision.AnimeId">@item.AnimeTitle</a></h3><p>@SourceLinks(item.Decision.SourceMalId, item.Decision.SourceAniListId) · from @item.Decision.Origin.ToLowerInvariant() · @item.Decision.DecidedAt.ToLocalTime().ToString("d MMM yyyy")</p></div>
+                        <button @onclick="() => ForgetAsync(item.Decision.Id)" disabled="@_working">Forget</button>
+                    </div>
+                }
+            </div>
+        }
+    }
+    else if (_tab == "auto")
     {
         @if (!string.IsNullOrEmpty(_undoNotice)) { <p class="review-notice">@_undoNotice</p> }
         @if (_autoResolved is null) { <p class="review-muted">Loading automatic decisions…</p> }
@@ -100,10 +139,41 @@
     private MatchingSettings? _settings;
     private AutoDecisionMode _editMode;
     private int _editThreshold;
+    private int _editDeferDays;
+    private List<DeferredReviewItem>? _deferred;
+    private int _deferredCount;
+    private List<RememberedDecisionItem>? _remembered;
+    private int _rememberedCount;
+    private async Task ShowDeferredAsync()
+    {
+        _tab = "deferred";
+        _deferred = await ReviewService.GetDeferredAsync();
+    }
+    private async Task ShowRememberedAsync()
+    {
+        _tab = "remembered";
+        _remembered = await ReviewService.GetRememberedDecisionsAsync();
+    }
+    private async Task ReopenAsync(int reviewId)
+    {
+        _working = true;
+        await ReviewService.ReopenDeferredAsync(reviewId);
+        _deferred = await ReviewService.GetDeferredAsync();
+        await ReloadAsync();
+        _working = false;
+    }
+    private async Task ForgetAsync(int decisionId)
+    {
+        _working = true;
+        await ReviewService.ForgetDecisionAsync(decisionId);
+        _remembered = await ReviewService.GetRememberedDecisionsAsync();
+        await ReloadAsync();
+        _working = false;
+    }
     private string? _settingsNotice;
     private async Task SaveSettingsAsync()
     {
-        await ReviewService.SaveMatchingSettingsAsync(new MatchingSettings(_editMode, _editThreshold));
+        await ReviewService.SaveMatchingSettingsAsync(new MatchingSettings(_editMode, _editThreshold, _editDeferDays));
         await LoadSettingsAsync();
         _settingsNotice = "Saved.";
         await ReloadAsync();
@@ -113,6 +183,7 @@
         _settings = await ReviewService.GetMatchingSettingsAsync();
         _editMode = _settings.Mode;
         _editThreshold = _settings.MergeThreshold;
+        _editDeferDays = _settings.DeferDays;
     }
     private async Task ShowAutoResolvedAsync()
     {
@@ -179,6 +250,8 @@
     {
         _items = await ReviewService.GetPendingAsync();
         _autoResolvedCount = await ReviewService.GetAutoResolvedCountAsync();
+        _deferredCount = await ReviewService.GetDeferredCountAsync();
+        _rememberedCount = await ReviewService.GetRememberedDecisionCountAsync();
     }
     private static string FormatDate(DateTime? value) => value?.ToString("MMM yyyy") ?? "Unknown date";
     private static RenderFragment SourceLinks(int? malId, int? aniListId) => builder =>

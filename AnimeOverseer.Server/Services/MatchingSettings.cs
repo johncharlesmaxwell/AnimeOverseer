@@ -21,33 +21,38 @@ public enum AutoDecisionMode
 /// rather than through SettingsService so a saved change applies to the very
 /// next import instead of after SettingsService's cache expires.
 /// </summary>
-public sealed record MatchingSettings(AutoDecisionMode Mode, int MergeThreshold)
+public sealed record MatchingSettings(AutoDecisionMode Mode, int MergeThreshold, int DeferDays = 30)
 {
     public const string ModeKey = "matching.autoDecisionMode";
     public const string MergeThresholdKey = "matching.autoMergeThreshold";
+    public const string DeferDaysKey = "matching.deferDays";
     public const int MinimumMergeThreshold = 50;
+    public const int MaximumDeferDays = 365;
 
     // Suggest-only until someone has watched the suggestions against a real queue.
-    public static readonly MatchingSettings Default = new(AutoDecisionMode.Suggest, 90);
+    public static readonly MatchingSettings Default = new(AutoDecisionMode.Suggest, 90, 30);
 
-    public static MatchingSettings Read(string? mode, string? mergeThreshold) => new(
+    public static MatchingSettings Read(string? mode, string? mergeThreshold, string? deferDays = null) => new(
         Enum.TryParse<AutoDecisionMode>(mode, ignoreCase: true, out var parsedMode) && Enum.IsDefined(parsedMode) ? parsedMode : Default.Mode,
         int.TryParse(mergeThreshold, NumberStyles.None, CultureInfo.InvariantCulture, out var threshold)
-            ? Math.Clamp(threshold, MinimumMergeThreshold, 100) : Default.MergeThreshold);
+            ? Math.Clamp(threshold, MinimumMergeThreshold, 100) : Default.MergeThreshold,
+        int.TryParse(deferDays, NumberStyles.None, CultureInfo.InvariantCulture, out var days)
+            ? Math.Clamp(days, 1, MaximumDeferDays) : Default.DeferDays);
 
     public static async Task<MatchingSettings> LoadAsync(AnimeDbContext db, CancellationToken ct = default)
     {
         var values = await db.AppSettings.AsNoTracking()
-            .Where(setting => setting.Key == ModeKey || setting.Key == MergeThresholdKey)
+            .Where(setting => setting.Key == ModeKey || setting.Key == MergeThresholdKey || setting.Key == DeferDaysKey)
             .ToDictionaryAsync(setting => setting.Key, setting => setting.Value, ct);
-        return Read(values.GetValueOrDefault(ModeKey), values.GetValueOrDefault(MergeThresholdKey));
+        return Read(values.GetValueOrDefault(ModeKey), values.GetValueOrDefault(MergeThresholdKey), values.GetValueOrDefault(DeferDaysKey));
     }
 
     public static async Task SaveAsync(AnimeDbContext db, MatchingSettings settings, CancellationToken ct = default)
     {
-        var stored = Read(settings.Mode.ToString(), settings.MergeThreshold.ToString(CultureInfo.InvariantCulture));
+        var stored = Read(settings.Mode.ToString(), settings.MergeThreshold.ToString(CultureInfo.InvariantCulture), settings.DeferDays.ToString(CultureInfo.InvariantCulture));
         await SetAsync(db, ModeKey, stored.Mode.ToString(), ct);
         await SetAsync(db, MergeThresholdKey, stored.MergeThreshold.ToString(CultureInfo.InvariantCulture), ct);
+        await SetAsync(db, DeferDaysKey, stored.DeferDays.ToString(CultureInfo.InvariantCulture), ct);
         await db.SaveChangesAsync(ct);
     }
 

@@ -14,6 +14,7 @@ public class AnimeDbContext : DbContext
     public DbSet<AnimeImage> AnimeImages { get; set; }
     public DbSet<AnimeTitleAlias> AnimeTitleAliases { get; set; }
     public DbSet<PendingAnimeReview> PendingAnimeReviews { get; set; }
+    public DbSet<AnimeMatchDecision> AnimeMatchDecisions { get; set; }
     public DbSet<Genre> Genres { get; set; }
     public DbSet<AnimeGenre> AnimeGenres { get; set; }
     public DbSet<Theme> Themes { get; set; }
@@ -136,6 +137,14 @@ public class AnimeDbContext : DbContext
 
         modelBuilder.Entity<PendingAnimeReview>()
             .HasIndex(review => new { review.Status, review.CreatedAt });
+
+        modelBuilder.Entity<AnimeMatchDecision>()
+            .HasOne<Anime>()
+            .WithMany()
+            .HasForeignKey(decision => decision.AnimeId)
+            .OnDelete(DeleteBehavior.Cascade);
+        modelBuilder.Entity<AnimeMatchDecision>().HasIndex(decision => decision.SourceAniListId);
+        modelBuilder.Entity<AnimeMatchDecision>().HasIndex(decision => decision.SourceMalId);
 
         modelBuilder.Entity<Anime>().HasIndex(anime => anime.StartDate);
         modelBuilder.Entity<Anime>().HasIndex(anime => anime.AniListId);

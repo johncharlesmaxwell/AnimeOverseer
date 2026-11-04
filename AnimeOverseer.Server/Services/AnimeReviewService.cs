@@ -107,6 +107,54 @@ public sealed class AnimeReviewService(AnimeDbContext db, AnimeCacheService cach
     /// <summary>Returns null when undone, otherwise why it could not be.</summary>
     public Task<string?> UndoAutomaticResolutionAsync(int reviewId) => cache.UndoAutomaticResolutionAsync(reviewId);
 
+    public async Task<List<DeferredReviewItem>> GetDeferredAsync()
+    {
+        var reviews = await db.PendingAnimeReviews.Where(review => review.Status == "Deferred").ToListAsync();
+        return reviews
+            .OrderBy(review => review.DeferredUntil ?? DateTime.MinValue)
+            .Select(review => new DeferredReviewItem { Review = review, Incoming = JsonSerializer.Deserialize<AnimeImportSnapshot>(review.PayloadJson) ?? new() })
+            .ToList();
+    }
+
+    public Task<int> GetDeferredCountAsync() => db.PendingAnimeReviews.CountAsync(review => review.Status == "Deferred");
+
+    /// <summary>Ends a snooze early and returns the review to the queue.</summary>
+    public async Task<bool> ReopenDeferredAsync(int reviewId)
+    {
+        var review = await db.PendingAnimeReviews.FirstOrDefaultAsync(item => item.Id == reviewId && item.Status == "Deferred");
+        if (review is null) return false;
+        review.Status = "Pending";
+        review.ResolvedAt = null;
+        review.DeferredUntil = null;
+        await db.SaveChangesAsync();
+        return true;
+    }
+
+    public async Task<List<RememberedDecisionItem>> GetRememberedDecisionsAsync(int take = 200)
+    {
+        var decisions = await db.AnimeMatchDecisions.OrderByDescending(decision => decision.DecidedAt).Take(take).ToListAsync();
+        var ids = decisions.Select(decision => decision.AnimeId).Distinct().ToList();
+        var titles = await db.Animes.Where(anime => ids.Contains(anime.Id)).ToDictionaryAsync(anime => anime.Id, anime => anime.Title);
+        // The source's own title lives only in the review that produced the decision.
+        var aniListIds = decisions.Where(decision => decision.SourceAniListId is not null).Select(decision => decision.SourceAniListId).Distinct().ToList();
+        var malIds = decisions.Where(decision => decision.SourceMalId is not null).Select(decision => decision.SourceMalId).Distinct().ToList();
+        var sourceTitles = (await db.PendingAnimeReviews.Where(review => aniListIds.Contains(review.SourceAniListId) || malIds.Contains(review.SourceMalId))
+                .Select(review => new { review.SourceAniListId, review.SourceMalId, review.PayloadJson }).ToListAsync())
+            .Select(review => (review.SourceAniListId, review.SourceMalId, Title: JsonSerializer.Deserialize<AnimeImportSnapshot>(review.PayloadJson)?.Title))
+            .ToList();
+        return decisions.Select(decision => new RememberedDecisionItem
+        {
+            Decision = decision,
+            AnimeTitle = titles.GetValueOrDefault(decision.AnimeId) ?? $"#{decision.AnimeId}",
+            SourceTitle = sourceTitles.FirstOrDefault(source => decision.AppliesTo(source.SourceAniListId, source.SourceMalId)).Title
+        }).ToList();
+    }
+
+    public Task<int> GetRememberedDecisionCountAsync() => db.AnimeMatchDecisions.CountAsync();
+
+    public async Task<bool> ForgetDecisionAsync(int decisionId) =>
+        await db.AnimeMatchDecisions.Where(decision => decision.Id == decisionId).ExecuteDeleteAsync() > 0;
+
     public Task<MatchingSettings> GetMatchingSettingsAsync() => MatchingSettings.LoadAsync(db);
 
     public Task SaveMatchingSettingsAsync(MatchingSettings settings) => MatchingSettings.SaveAsync(db, settings);
@@ -171,6 +219,19 @@ public sealed class PendingAnimeReviewItem
     public Dictionary<int, CandidateMatch> Matches { get; init; } = [];
     public CandidateMatch? BestMatch => Candidates.Count > 0 ? Matches.GetValueOrDefault(Candidates[0].Id) : null;
     public MatchSuggestion? Suggestion { get; init; }
+}
+
+public sealed class DeferredReviewItem
+{
+    public PendingAnimeReview Review { get; init; } = null!;
+    public AnimeImportSnapshot Incoming { get; init; } = new();
+}
+
+public sealed class RememberedDecisionItem
+{
+    public AnimeMatchDecision Decision { get; init; } = null!;
+    public string AnimeTitle { get; init; } = string.Empty;
+    public string? SourceTitle { get; init; }
 }
 
 public sealed class AutoResolvedReviewItem

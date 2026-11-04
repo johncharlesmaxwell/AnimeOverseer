@@ -181,6 +181,27 @@ public class PendingAnimeReview
     public string? PreMergeSnapshotJson { get; set; }
     // Set when a person undoes an automatic decision; automation then leaves it alone.
     public bool AutoDecisionUndone { get; set; }
+    // A Deferred review stays snoozed until this time; later imports of the same
+    // source then reopen it. Null on reviews deferred before snoozing existed.
+    public DateTime? DeferredUntil { get; set; }
+}
+
+/// <summary>
+/// A person's answer to "is this provider record the same anime as this catalogue
+/// row?", remembered so later imports are not asked the same question again.
+/// </summary>
+public class AnimeMatchDecision
+{
+    public int Id { get; set; }
+    public int? SourceAniListId { get; set; }
+    public int? SourceMalId { get; set; }
+    public int AnimeId { get; set; }
+    public bool IsSameAnime { get; set; }
+    public string Origin { get; set; } = string.Empty; // Merge, Create, Undo
+    public DateTime DecidedAt { get; set; } = DateTime.UtcNow;
+
+    public bool AppliesTo(int? aniListId, int? malId) =>
+        (SourceAniListId is > 0 && SourceAniListId == aniListId) || (SourceMalId is > 0 && SourceMalId == malId);
 }
 
 /// <summary>A merge target's own state before a review merged an import into it.</summary>
