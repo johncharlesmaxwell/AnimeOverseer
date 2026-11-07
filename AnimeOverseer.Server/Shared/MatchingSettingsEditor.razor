@@ -67,6 +67,8 @@ else
                     <label>Alternative title or alias matches <input type="number" min="0" max="100" @bind="_form.Scoring.AliasMatch" @bind:after="Changed" /></label>
                     <label title="Fully similar titles earn all of these points; partly similar titles earn a share">Similar titles (up to) <input type="number" min="0" max="100" @bind="_form.Scoring.SimilarTitleMax" @bind:after="Changed" /></label>
                     <label class="matching-penalty">Titles name different seasons <input type="number" min="0" max="100" @bind="_form.Scoring.SeasonMismatchPenalty" @bind:after="Changed" /></label>
+                    <label class="matching-toggle" title="An alias used by 3 catalogue entries earns a third of the alias points"><input type="checkbox" @bind="_form.Scoring.ScaleSharedAliases" @bind:after="Changed" /> Aliases shared by several entries count for less</label>
+                    <label class="matching-toggle" title="Yuuki, Yūki and Yuki; Toukyou and Tokyo"><input type="checkbox" @bind="_form.Scoring.MatchRomajiSpellings" @bind:after="Changed" /> Match romaji long-vowel spellings</label>
                 </fieldset>
                 <fieldset>
                     <legend>Start date</legend>
@@ -86,7 +88,14 @@ else
                     <legend>Episodes</legend>
                     <label>Same episode count <input type="number" min="0" max="100" @bind="_form.Scoring.EpisodesSame" @bind:after="Changed" /></label>
                     <label>Counts differ by one <input type="number" min="0" max="100" @bind="_form.Scoring.EpisodesNearly" @bind:after="Changed" /></label>
+                    <label title="Counts further apart than one but within this many are neither rewarded nor penalised">Counts within this many are neutral <input type="number" min="1" max="50" @bind="_form.Scoring.EpisodeTolerance" @bind:after="Changed" /></label>
                     <label class="matching-penalty">Counts differ by more <input type="number" min="0" max="100" @bind="_form.Scoring.EpisodesDifferPenalty" @bind:after="Changed" /></label>
+                    <label class="matching-toggle"><input type="checkbox" @bind="_form.Scoring.IgnoreEpisodesWhileAiring" @bind:after="Changed" /> Ignore differing counts while either is airing</label>
+                </fieldset>
+                <fieldset>
+                    <legend>Episode length</legend>
+                    <label title="Within 3 minutes or 20% of each other">Lengths agree <input type="number" min="0" max="100" @bind="_form.Scoring.DurationSimilar" @bind:after="Changed" /></label>
+                    <label class="matching-penalty" title="15 minutes or less on one side, 20 or more on the other">Short vs full-length <input type="number" min="0" max="100" @bind="_form.Scoring.DurationDifferPenalty" @bind:after="Changed" /></label>
                 </fieldset>
                 <fieldset>
                     <legend>Confidence and conflicts</legend>
@@ -95,9 +104,10 @@ else
                     <label title="Different provider IDs, a franchise relation, and the conflicts switched on above hold a score at or below this">Hard-conflict score cap <input type="number" min="0" max="100" @bind="_form.Scoring.HardConflictCap" @bind:after="Changed" /></label>
                 </fieldset>
             </div>
-            <p class="matching-note">Different AniList or MAL IDs and a franchise relation (sequel, prequel…) are always hard conflicts.</p>
+            <p class="matching-note">Different AniList, MAL or Kitsu IDs and a franchise relation (sequel, prequel…) are always hard conflicts. Formats are compared after folding provider names, so TV SHORT and TV count as the same format.</p>
             @{ var best = Current.Scoring.MaximumScore; }
             <p class="matching-note">Best possible score with these weights: <strong>@best</strong>.
+                @if (best > 100) { <span class="matching-warning">Scores are held at 100, so this leaves @(best - 100) points unused and strong matches stop being told apart. Lower some weights so they add up to 100.</span> }
                 @if (best < Current.MergeThreshold) { <span class="matching-warning">This is below the merge threshold (@Current.MergeThreshold), so nothing will be merged automatically.</span> }
             </p>
         </section>
@@ -323,6 +333,8 @@ else
         public int AliasMatch { get; set; }
         public int SimilarTitleMax { get; set; }
         public int SeasonMismatchPenalty { get; set; }
+        public bool ScaleSharedAliases { get; set; }
+        public bool MatchRomajiSpellings { get; set; }
         public int StartWithinMonth { get; set; }
         public int StartWithinSixMonths { get; set; }
         public int StartUnderYearPenalty { get; set; }
@@ -334,6 +346,10 @@ else
         public int EpisodesSame { get; set; }
         public int EpisodesNearly { get; set; }
         public int EpisodesDifferPenalty { get; set; }
+        public int EpisodeTolerance { get; set; }
+        public bool IgnoreEpisodesWhileAiring { get; set; }
+        public int DurationSimilar { get; set; }
+        public int DurationDifferPenalty { get; set; }
         public int HardConflictCap { get; set; }
         public int HighConfidence { get; set; }
         public int MediumConfidence { get; set; }
@@ -342,10 +358,13 @@ else
         {
             MainTitleExact = s.MainTitleExact, OriginalTitleExact = s.OriginalTitleExact, AliasMatch = s.AliasMatch,
             SimilarTitleMax = s.SimilarTitleMax, SeasonMismatchPenalty = s.SeasonMismatchPenalty,
+            ScaleSharedAliases = s.ScaleSharedAliases, MatchRomajiSpellings = s.MatchRomajiSpellings,
             StartWithinMonth = s.StartWithinMonth, StartWithinSixMonths = s.StartWithinSixMonths, StartUnderYearPenalty = s.StartUnderYearPenalty,
             StartYearApartIsConflict = s.StartYearApartIsConflict, StartYearApartPenalty = s.StartYearApartPenalty,
             FormatSame = s.FormatSame, FormatDifferPenalty = s.FormatDifferPenalty, MovieVsSeriesIsConflict = s.MovieVsSeriesIsConflict,
             EpisodesSame = s.EpisodesSame, EpisodesNearly = s.EpisodesNearly, EpisodesDifferPenalty = s.EpisodesDifferPenalty,
+            EpisodeTolerance = s.EpisodeTolerance, IgnoreEpisodesWhileAiring = s.IgnoreEpisodesWhileAiring,
+            DurationSimilar = s.DurationSimilar, DurationDifferPenalty = s.DurationDifferPenalty,
             HardConflictCap = s.HardConflictCap, HighConfidence = s.HighConfidence, MediumConfidence = s.MediumConfidence
         };
 
@@ -353,10 +372,13 @@ else
         {
             MainTitleExact = MainTitleExact, OriginalTitleExact = OriginalTitleExact, AliasMatch = AliasMatch,
             SimilarTitleMax = SimilarTitleMax, SeasonMismatchPenalty = SeasonMismatchPenalty,
+            ScaleSharedAliases = ScaleSharedAliases, MatchRomajiSpellings = MatchRomajiSpellings,
             StartWithinMonth = StartWithinMonth, StartWithinSixMonths = StartWithinSixMonths, StartUnderYearPenalty = StartUnderYearPenalty,
             StartYearApartIsConflict = StartYearApartIsConflict, StartYearApartPenalty = StartYearApartPenalty,
             FormatSame = FormatSame, FormatDifferPenalty = FormatDifferPenalty, MovieVsSeriesIsConflict = MovieVsSeriesIsConflict,
             EpisodesSame = EpisodesSame, EpisodesNearly = EpisodesNearly, EpisodesDifferPenalty = EpisodesDifferPenalty,
+            EpisodeTolerance = EpisodeTolerance, IgnoreEpisodesWhileAiring = IgnoreEpisodesWhileAiring,
+            DurationSimilar = DurationSimilar, DurationDifferPenalty = DurationDifferPenalty,
             HardConflictCap = HardConflictCap, HighConfidence = HighConfidence, MediumConfidence = MediumConfidence
         };
     }

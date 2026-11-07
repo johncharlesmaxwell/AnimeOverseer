@@ -617,7 +617,7 @@ public class AnimeCacheService(AnimeDbContext db, AniListApiService aniList, Jik
         var reason = candidates.Count > 1
             ? "More than one title/alias candidate was found"
             : "Title or alias match needs confirmation";
-        var matches = ScoreCandidates(source, candidates, (await MatchingSettings.LoadAsync(db, ct)).Scoring);
+        var matches = ScoreCandidates(source, candidates, (await MatchingSettings.LoadAsync(db, ct)).Scoring, await NameUsageAsync(ct));
         // An expired snooze reopens the deferred review with the fresh import.
         var review = prior ?? new PendingAnimeReview { SeasonId = fixedSeasonId ?? await UnknownSeasonIdAsync(ct), SourceName = "Catalogue import" };
         review.SourceAniListId = source.AniListId;
@@ -635,9 +635,18 @@ public class AnimeCacheService(AnimeDbContext db, AniListApiService aniList, Jik
         return review;
     }
 
-    private static List<CandidateMatch> ScoreCandidates(Anime source, IEnumerable<Anime> candidates, MatchScoring scoring)
+    private Func<string, int>? _nameUsage;
+
+    /// <summary>
+    /// Catalogue name usage, loaded once per service instance. Rows added later in the
+    /// same import are not counted, which only makes a shared alias look slightly rarer.
+    /// </summary>
+    private async Task<Func<string, int>> NameUsageAsync(CancellationToken ct)
+        => _nameUsage ??= await CatalogueNameUsage.LoadAsync(db, ct);
+
+    private static List<CandidateMatch> ScoreCandidates(Anime source, IEnumerable<Anime> candidates, MatchScoring scoring, Func<string, int> nameUsage)
         => candidates.DistinctBy(candidate => candidate.Id)
-            .Select(candidate => MatchScorer.Score(source, candidate, scoring))
+            .Select(candidate => MatchScorer.Score(source, candidate, scoring, nameUsage))
             .OrderByDescending(match => match.Score)
             .ToList();
 
@@ -712,7 +721,7 @@ public class AnimeCacheService(AnimeDbContext db, AniListApiService aniList, Jik
         if (viable.Count > 0)
         {
             var settings = await MatchingSettings.LoadAsync(db, ct);
-            var matches = ScoreCandidates(source, viable, settings.Scoring);
+            var matches = ScoreCandidates(source, viable, settings.Scoring, await NameUsageAsync(ct));
             review.CandidateAnimeIdsJson = JsonSerializer.Serialize(viable.Select(candidate => candidate.Id));
             review.MatchScore = matches[0].Score;
             review.MatchEvidenceJson = JsonSerializer.Serialize(matches);
@@ -863,7 +872,8 @@ public class AnimeCacheService(AnimeDbContext db, AniListApiService aniList, Jik
 
     private static bool HasConflictingIds(Anime source, Anime candidate)
         => (source.AniListId is > 0 && candidate.AniListId is > 0 && source.AniListId != candidate.AniListId) ||
-           HasConflictingMalId(source, candidate);
+           HasConflictingMalId(source, candidate) ||
+           MatchScorer.HasConflictingKitsuId(source, candidate);
 
     private static bool HasConflictingMalId(Anime source, Anime candidate)
         => source.MALId is > 0 && candidate.MALId is > 0 && source.MALId != candidate.MALId;
@@ -904,9 +914,13 @@ public class AnimeCacheService(AnimeDbContext db, AniListApiService aniList, Jik
         }
     }
 
+    // Each name is indexed exactly and with romaji long vowels folded ("~"-prefixed so
+    // the two forms never collide), letting "Yuuki" find a row titled "Yūki".
     private static IEnumerable<string> Names(Anime anime)
         => new[] { anime.Title, anime.OriginalTitle }.Concat(anime.AlternativeTitles).Concat(anime.TitleAliases.Select(alias => alias.Title))
-            .Select(TitleNormalizer.Compact).Where(name => name.Length >= 3).Distinct();
+            .Select(TitleNormalizer.Compact).Where(name => name.Length >= 3)
+            .SelectMany(name => new[] { name, "~" + TitleNormalizer.RomajiKey(name) })
+            .Distinct();
 
     private static double BestAliasScore(Anime source, Anime existing)
     {

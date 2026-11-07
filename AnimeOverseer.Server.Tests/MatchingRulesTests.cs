@@ -58,7 +58,7 @@ public sealed class MatchingRulesTests : SqliteIntegrationTestBase
 
         var match = MatchScorer.Score(Anime("Orbit", Spring2026, "TV", 12), Anime("Orbit", Spring2026.AddYears(-2), "TV", 12), scoring);
 
-        Assert.Equal(45 - 30 + 15 + 15, match.Score);
+        Assert.Equal(45 - 30 + 10 + 15, match.Score);
         Assert.Equal("Low", MatchScorer.Confidence(match, scoring));
     }
 

@@ -79,11 +79,12 @@ public sealed class ImportIntegrationTests : SqliteIntegrationTestBase
     {
         await using var db = CreateDb();
         var season = await AddSeasonAsync(db);
-        db.Animes.Add(new Anime { Title = "Orbit", Type = "TV", Episodes = 12, StartDate = new DateTime(2026, 4, 1), SeasonId = season.Id });
+        db.Animes.Add(new Anime { Title = "Orbit", Type = "TV", Episodes = 12, Duration = 24, StartDate = new DateTime(2026, 4, 1), SeasonId = season.Id });
         await db.SaveChangesAsync();
         var incoming = Incoming(82, "Orbit", true);
         incoming.Type = "TV";
         incoming.Episodes = 12;
+        incoming.Duration = 24;
         incoming.StartDate = new DateTime(2026, 4, 8);
 
         await CreateCache(db).FetchAndCacheSeasonsFromAsync(2026, ["spring"], (_, _, _) => Task.FromResult(new List<Anime> { incoming }));

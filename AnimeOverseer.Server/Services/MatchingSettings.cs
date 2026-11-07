@@ -139,6 +139,10 @@ public sealed record MatchScoring
     /// <summary>Points for fully similar titles; partial similarity earns a share of them.</summary>
     public int SimilarTitleMax { get; init; } = 30;
     public int SeasonMismatchPenalty { get; init; } = 25;
+    /// <summary>Divide alias points by the number of catalogue rows sharing that alias.</summary>
+    public bool ScaleSharedAliases { get; init; } = true;
+    /// <summary>Treat "Yuuki", "Yūki" and "Yuki" as the same title when no exact title matches.</summary>
+    public bool MatchRomajiSpellings { get; init; } = true;
 
     // Start date.
     public int StartWithinMonth { get; init; } = 25;
@@ -149,7 +153,7 @@ public sealed record MatchScoring
     public int StartYearApartPenalty { get; init; } = 30;
 
     // Format.
-    public int FormatSame { get; init; } = 15;
+    public int FormatSame { get; init; } = 10;
     public int FormatDifferPenalty { get; init; } = 5;
     /// <summary>When off, movie vs series costs <see cref="FormatDifferPenalty"/> like any other format difference.</summary>
     public bool MovieVsSeriesIsConflict { get; init; } = true;
@@ -158,6 +162,15 @@ public sealed record MatchScoring
     public int EpisodesSame { get; init; } = 15;
     public int EpisodesNearly { get; init; } = 8;
     public int EpisodesDifferPenalty { get; init; } = 10;
+    /// <summary>Counts this far apart (beyond one) are neutral rather than penalised.</summary>
+    public int EpisodeTolerance { get; init; } = 2;
+    /// <summary>Differing counts are neutral when either show is still airing or not yet aired.</summary>
+    public bool IgnoreEpisodesWhileAiring { get; init; } = true;
+
+    // Episode length.
+    public int DurationSimilar { get; init; } = 5;
+    /// <summary>Applied when one side has short episodes (15 min or less) and the other full-length (20 min or more).</summary>
+    public int DurationDifferPenalty { get; init; } = 10;
 
     // Bands.
     /// <summary>The highest score a candidate with a hard conflict can have, so conflicts sort last.</summary>
@@ -177,13 +190,18 @@ public sealed record MatchScoring
             StartUnderYearPenalty = Points(StartUnderYearPenalty), StartYearApartPenalty = Points(StartYearApartPenalty),
             FormatSame = Points(FormatSame), FormatDifferPenalty = Points(FormatDifferPenalty),
             EpisodesSame = Points(EpisodesSame), EpisodesNearly = Points(EpisodesNearly), EpisodesDifferPenalty = Points(EpisodesDifferPenalty),
+            EpisodeTolerance = Math.Clamp(EpisodeTolerance, 1, 50),
+            DurationSimilar = Points(DurationSimilar), DurationDifferPenalty = Points(DurationDifferPenalty),
             HardConflictCap = Points(HardConflictCap),
             HighConfidence = high,
             MediumConfidence = Math.Clamp(MediumConfidence, 0, high)
         };
     }
 
-    /// <summary>The best score a candidate can reach: strongest title, close start, same format and episodes.</summary>
-    public int MaximumScore => Math.Min(100,
-        new[] { MainTitleExact, OriginalTitleExact, AliasMatch, SimilarTitleMax }.Max() + StartWithinMonth + FormatSame + EpisodesSame);
+    /// <summary>
+    /// The points a candidate earns when every signal agrees: strongest title, close start, same format,
+    /// episodes and length. The defaults add up to exactly 100; a final score is held to 0-100.
+    /// </summary>
+    public int MaximumScore =>
+        new[] { MainTitleExact, OriginalTitleExact, AliasMatch, SimilarTitleMax }.Max() + StartWithinMonth + FormatSame + EpisodesSame + DurationSimilar;
 }

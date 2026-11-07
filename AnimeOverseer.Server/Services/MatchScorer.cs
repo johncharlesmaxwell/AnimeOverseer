@@ -14,15 +14,20 @@ public static class MatchScorer
     // format, and episode count reaches 100. Hard negatives cap the score so
     // they always sort last. Weights are configurable in MatchingSettings.
 
-    public static CandidateMatch Score(Anime source, Anime candidate, MatchScoring? scoring = null)
+    /// <param name="nameUsage">
+    /// How many catalogue rows use a compact name (from <see cref="TitleNormalizer.Compact"/>),
+    /// so a franchise name shared by many entries counts for less. Null treats every name as unique.
+    /// </param>
+    public static CandidateMatch Score(Anime source, Anime candidate, MatchScoring? scoring = null, Func<string, int>? nameUsage = null)
     {
         var weights = scoring ?? MatchScoring.Default;
         var evidence = new List<MatchEvidence>();
         AddIdEvidence(source, candidate, evidence);
-        AddTitleEvidence(source, candidate, weights, evidence);
+        AddTitleEvidence(source, candidate, weights, nameUsage, evidence);
         AddStartDateEvidence(source.StartDate, candidate.StartDate, weights, evidence);
         AddTypeEvidence(source.Type, candidate.Type, weights, evidence);
-        AddEpisodeEvidence(source.Episodes, candidate.Episodes, weights, evidence);
+        AddEpisodeEvidence(source, candidate, weights, evidence);
+        AddDurationEvidence(source.Duration, candidate.Duration, weights, evidence);
 
         var score = Math.Clamp(evidence.Sum(item => item.Weight), 0, 100);
         if (evidence.Any(item => item.Kind == MatchEvidenceKind.HardNegative)) score = Math.Min(score, weights.HardConflictCap);
@@ -72,9 +77,15 @@ public static class MatchScorer
             evidence.Add(HardNegative("AniList ID", $"Different AniList IDs ({source.AniListId} vs {candidate.AniListId})"));
         if (source.MALId is > 0 && candidate.MALId is > 0 && source.MALId != candidate.MALId)
             evidence.Add(HardNegative("MAL ID", $"Different MAL IDs ({source.MALId} vs {candidate.MALId})"));
+        if (HasConflictingKitsuId(source, candidate))
+            evidence.Add(HardNegative("Kitsu ID", $"Different Kitsu IDs ({source.KitsuId} vs {candidate.KitsuId})"));
         if (RelationTo(source, candidate) is { } relation)
             evidence.Add(HardNegative("Relation", $"Incoming lists this as its {relation.RelationType.Replace('_', ' ').ToLowerInvariant()}"));
     }
+
+    /// <summary>True when both records carry a Kitsu ID and the IDs differ.</summary>
+    public static bool HasConflictingKitsuId(Anime source, Anime candidate)
+        => source.KitsuId is > 0 && candidate.KitsuId is > 0 && source.KitsuId != candidate.KitsuId;
 
     /// <summary>True when the source's provider lists the candidate as a separate franchise entry.</summary>
     public static bool IsRelated(Anime source, Anime candidate) => RelationTo(source, candidate) is not null;
@@ -84,7 +95,7 @@ public static class MatchScorer
             (relation.AniListId is > 0 && relation.AniListId == candidate.AniListId) ||
             (relation.MalId is > 0 && relation.MalId == candidate.MALId));
 
-    private static void AddTitleEvidence(Anime source, Anime candidate, MatchScoring weights, List<MatchEvidence> evidence)
+    private static void AddTitleEvidence(Anime source, Anime candidate, MatchScoring weights, Func<string, int>? nameUsage, List<MatchEvidence> evidence)
     {
         var sourceMain = TitleNormalizer.Compact(source.Title);
         var sourceOriginal = TitleNormalizer.Compact(source.OriginalTitle);
@@ -98,7 +109,9 @@ public static class MatchScorer
         else if (sourceOriginal.Length > 0 && sourceOriginal == candidateOriginal)
             evidence.Add(Positive("Title", "Original (romaji/native) titles match exactly", weights.OriginalTitleExact));
         else if (sourceNames.Overlaps(candidateNames))
-            evidence.Add(Positive("Title", "Matched through an alternative title or alias", weights.AliasMatch));
+            evidence.Add(AliasEvidence(sourceNames.Intersect(candidateNames), weights, nameUsage, ""));
+        else if (weights.MatchRomajiSpellings && RomajiEvidence(source, candidate, weights, nameUsage) is { } romaji)
+            evidence.Add(romaji);
         else
         {
             var similarity = AllNames(source).Select(TitleNormalizer.Tokens).Where(tokens => tokens.Count >= 2)
@@ -116,6 +129,38 @@ public static class MatchScorer
         var candidateSeason = TitleNormalizer.SeasonNumber(candidate.Title);
         if (sourceSeason != candidateSeason)
             evidence.Add(Negative("Season", $"Titles name different seasons ({sourceSeason} vs {candidateSeason})", -weights.SeasonMismatchPenalty));
+    }
+
+    /// <summary>
+    /// An alias match, worth less when the shared name is used by several catalogue
+    /// rows. The most distinctive shared name decides.
+    /// </summary>
+    private static MatchEvidence AliasEvidence(IEnumerable<string> sharedNames, MatchScoring weights, Func<string, int>? nameUsage, string qualifier)
+    {
+        var usage = weights.ScaleSharedAliases && nameUsage is not null
+            ? sharedNames.Select(name => Math.Max(1, nameUsage(name))).DefaultIfEmpty(1).Min()
+            : 1;
+        return usage > 1
+            ? Positive("Title", $"Matched through an alias{qualifier} shared by {usage} catalogue entries", (int)Math.Round((double)weights.AliasMatch / usage))
+            : Positive("Title", $"Matched through an alternative title or alias{qualifier}", weights.AliasMatch);
+    }
+
+    /// <summary>Exact title evidence after folding romaji long vowels ("Yuuki" = "Yuki"), or null.</summary>
+    private static MatchEvidence? RomajiEvidence(Anime source, Anime candidate, MatchScoring weights, Func<string, int>? nameUsage)
+    {
+        const string qualifier = " (ignoring long-vowel spelling)";
+        var sourceMain = TitleNormalizer.RomajiKey(source.Title);
+        var sourceOriginal = TitleNormalizer.RomajiKey(source.OriginalTitle);
+        if (sourceMain.Length > 0 && sourceMain == TitleNormalizer.RomajiKey(candidate.Title))
+            return Positive("Title", $"Main titles match{qualifier}", weights.MainTitleExact);
+        if (sourceOriginal.Length > 0 && sourceOriginal == TitleNormalizer.RomajiKey(candidate.OriginalTitle))
+            return Positive("Title", $"Original (romaji/native) titles match{qualifier}", weights.OriginalTitleExact);
+        // Usage counts are kept by exact compact name, so report shared names in that form.
+        var sourceByKey = AllNames(source).Select(TitleNormalizer.Compact).Where(name => name.Length > 0)
+            .GroupBy(TitleNormalizer.RomajiKey).ToDictionary(group => group.Key, group => group.First(), StringComparer.Ordinal);
+        var shared = AllNames(candidate).Select(TitleNormalizer.Compact).Where(name => name.Length > 0)
+            .Where(name => sourceByKey.ContainsKey(TitleNormalizer.RomajiKey(name))).ToList();
+        return shared.Count > 0 ? AliasEvidence(shared, weights, nameUsage, qualifier) : null;
     }
 
     private static void AddStartDateEvidence(DateTime? source, DateTime? candidate, MatchScoring weights, List<MatchEvidence> evidence)
@@ -143,27 +188,56 @@ public static class MatchScorer
             evidence.Add(Neutral("Format", "Format unknown on one side"));
             return;
         }
-        if (string.Equals(source.Trim(), candidate.Trim(), StringComparison.OrdinalIgnoreCase))
-            evidence.Add(Positive("Format", $"Both are {source.Trim()}", weights.FormatSame));
-        else if (weights.MovieVsSeriesIsConflict && IsMovie(source) != IsMovie(candidate))
+        var sourceFormat = TitleNormalizer.Format(source)!;
+        var candidateFormat = TitleNormalizer.Format(candidate)!;
+        if (string.Equals(sourceFormat, candidateFormat, StringComparison.OrdinalIgnoreCase))
+            evidence.Add(Positive("Format", string.Equals(source.Trim(), candidate.Trim(), StringComparison.OrdinalIgnoreCase)
+                ? $"Both are {sourceFormat}"
+                : $"Both are {sourceFormat} ({source.Trim()} vs {candidate.Trim()})", weights.FormatSame));
+        else if (weights.MovieVsSeriesIsConflict && IsMovie(sourceFormat) != IsMovie(candidateFormat))
             evidence.Add(HardNegative("Format", $"Movie vs series ({source.Trim()} vs {candidate.Trim()})"));
         else
             evidence.Add(Negative("Format", $"Formats differ ({source.Trim()} vs {candidate.Trim()})", -weights.FormatDifferPenalty));
     }
 
-    private static void AddEpisodeEvidence(int? source, int? candidate, MatchScoring weights, List<MatchEvidence> evidence)
+    private static void AddEpisodeEvidence(Anime sourceAnime, Anime candidateAnime, MatchScoring weights, List<MatchEvidence> evidence)
     {
+        var source = sourceAnime.Episodes;
+        var candidate = candidateAnime.Episodes;
         if (source is not > 0 || candidate is not > 0)
         {
             evidence.Add(Neutral("Episodes", "Episode count unknown on one side"));
             return;
         }
-        if (source == candidate) evidence.Add(Positive("Episodes", $"Both have {source} episodes", weights.EpisodesSame));
-        else if (Math.Abs(source.Value - candidate.Value) <= 1) evidence.Add(Positive("Episodes", $"Episode counts nearly agree ({source} vs {candidate})", weights.EpisodesNearly));
+        var difference = Math.Abs(source.Value - candidate.Value);
+        if (difference == 0) evidence.Add(Positive("Episodes", $"Both have {source} episodes", weights.EpisodesSame));
+        else if (difference == 1) evidence.Add(Positive("Episodes", $"Episode counts nearly agree ({source} vs {candidate})", weights.EpisodesNearly));
+        // A show still airing reports the episodes so far, and providers differ on
+        // whether a recap or special counts, so small or in-progress gaps prove little.
+        else if (weights.IgnoreEpisodesWhileAiring && (TitleNormalizer.IsUnfinished(sourceAnime.Status) || TitleNormalizer.IsUnfinished(candidateAnime.Status)))
+            evidence.Add(Neutral("Episodes", $"Episode counts differ but one is still airing ({source} vs {candidate})"));
+        else if (difference <= weights.EpisodeTolerance)
+            evidence.Add(Neutral("Episodes", $"Episode counts close ({source} vs {candidate})"));
         else evidence.Add(Negative("Episodes", $"Episode counts differ ({source} vs {candidate})", -weights.EpisodesDifferPenalty));
     }
 
-    private static bool IsMovie(string type) => type.Trim().Equals("movie", StringComparison.OrdinalIgnoreCase);
+    private static void AddDurationEvidence(int? source, int? candidate, MatchScoring weights, List<MatchEvidence> evidence)
+    {
+        if (source is not > 0 || candidate is not > 0)
+        {
+            evidence.Add(Neutral("Length", "Episode length unknown on one side"));
+            return;
+        }
+        int shorter = Math.Min(source.Value, candidate.Value), longer = Math.Max(source.Value, candidate.Value);
+        if (longer - shorter <= Math.Max(3, longer / 5))
+            evidence.Add(Positive("Length", $"Episode lengths agree ({source} vs {candidate} min)", weights.DurationSimilar));
+        else if (shorter <= 15 && longer >= 20)
+            evidence.Add(Negative("Length", $"Short vs full-length episodes ({source} vs {candidate} min)", -weights.DurationDifferPenalty));
+        else
+            evidence.Add(Neutral("Length", $"Episode lengths differ ({source} vs {candidate} min)"));
+    }
+
+    private static bool IsMovie(string format) => format.Equals("Movie", StringComparison.OrdinalIgnoreCase);
 
     private static IEnumerable<string> AllNames(Anime anime)
         => new[] { anime.Title, anime.OriginalTitle }.Concat(anime.AlternativeTitles).Concat(anime.TitleAliases.Select(alias => alias.Title))

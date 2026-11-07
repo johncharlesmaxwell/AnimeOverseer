@@ -12,8 +12,8 @@ public class MatchScorerTests
     public void Exact_title_with_agreeing_metadata_scores_high()
     {
         var match = MatchScorer.Score(
-            Anime("Frieren", Spring2026, "TV", 28),
-            Anime("Frieren", Spring2026.AddDays(3), "TV", 28));
+            Anime("Frieren", Spring2026, "TV", 28, 24),
+            Anime("Frieren", Spring2026.AddDays(3), "TV", 28, 23));
 
         Assert.Equal(100, match.Score);
         Assert.Equal("High", MatchScorer.Confidence(match));
@@ -102,6 +102,6 @@ public class MatchScorerTests
     public void Season_number_reads_explicit_labels_only(string title, int expected) =>
         Assert.Equal(expected, TitleNormalizer.SeasonNumber(title));
 
-    private static Anime Anime(string title, DateTime? start, string? type, int? episodes)
-        => new() { Title = title, StartDate = start, Type = type, Episodes = episodes };
+    private static Anime Anime(string title, DateTime? start, string? type, int? episodes, int? duration = null)
+        => new() { Title = title, StartDate = start, Type = type, Episodes = episodes, Duration = duration };
 }

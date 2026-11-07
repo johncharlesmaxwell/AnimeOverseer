@@ -48,12 +48,13 @@ public sealed class AnimeReviewService(AnimeDbContext db, AnimeCacheService cach
         var ids = reviews.SelectMany(review => JsonSerializer.Deserialize<List<int>>(review.CandidateAnimeIdsJson) ?? []).Distinct().ToList();
         var anime = await db.Animes.Include(item => item.Season).Include(item => item.TitleAliases).Where(item => ids.Contains(item.Id)).ToDictionaryAsync(item => item.Id);
         var settings = preview?.Normalized() ?? await MatchingSettings.LoadAsync(db);
+        var nameUsage = await CatalogueNameUsage.LoadAsync(db);
         return reviews.Select(review =>
         {
             var incoming = JsonSerializer.Deserialize<AnimeImportSnapshot>(review.PayloadJson) ?? new();
             var candidates = (JsonSerializer.Deserialize<List<int>>(review.CandidateAnimeIdsJson) ?? [])
                 .Where(anime.ContainsKey).Select(id => anime[id]).ToList();
-            var matches = MatchesFor(incoming, candidates, settings.Scoring);
+            var matches = MatchesFor(incoming, candidates, settings.Scoring, nameUsage);
             return new PendingAnimeReviewItem
             {
                 Review = review,
@@ -74,10 +75,10 @@ public sealed class AnimeReviewService(AnimeDbContext db, AnimeCacheService cach
 
     // Scored for display without changing the stored review, so the page reflects
     // the current weights. Stored evidence is refreshed by imports and rechecks.
-    private static Dictionary<int, CandidateMatch> MatchesFor(AnimeImportSnapshot incoming, List<Anime> candidates, MatchScoring scoring)
+    private static Dictionary<int, CandidateMatch> MatchesFor(AnimeImportSnapshot incoming, List<Anime> candidates, MatchScoring scoring, Func<string, int> nameUsage)
     {
         var source = AnimeCacheService.FromSnapshot(incoming);
-        return candidates.ToDictionary(candidate => candidate.Id, candidate => MatchScorer.Score(source, candidate, scoring));
+        return candidates.ToDictionary(candidate => candidate.Id, candidate => MatchScorer.Score(source, candidate, scoring, nameUsage));
     }
 
     /// <summary>How the pending queue would be decided under <paramref name="settings"/>.</summary>

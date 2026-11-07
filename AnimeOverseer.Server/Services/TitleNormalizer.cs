@@ -23,6 +23,14 @@ public static class TitleNormalizer
             if (CharUnicodeInfo.GetUnicodeCategory(character) == UnicodeCategory.NonSpacingMark) continue;
             // Apostrophes are commonly omitted by provider and Sonarr/Radarr title sources.
             if (character is '\'' or '‘' or '’') continue;
+            // "Hunter × Hunter" and "Hunter x Hunter", "A & B" and "A and B" are the same title.
+            if (character is '×' or '&')
+            {
+                if (!previousWasSeparator) result.Append(' ');
+                result.Append(character == '×' ? "x " : "and ");
+                previousWasSeparator = true;
+                continue;
+            }
             if (char.IsLetterOrDigit(character))
             {
                 result.Append(char.ToLowerInvariant(character));
@@ -39,6 +47,41 @@ public static class TitleNormalizer
 
     /// <summary>The normalized title with word boundaries removed, for exact-identity lookups.</summary>
     public static string Compact(string? title) => Normalize(title).Replace(" ", string.Empty, StringComparison.Ordinal);
+
+    /// <summary>
+    /// A compact key with romaji long vowels folded, so "Yuuki", "Yūki" and "Yuki",
+    /// or "Toukyou" and "Tokyo", agree. Macrons are already removed by <see cref="Normalize"/>.
+    /// Looser than <see cref="Compact"/>: an English pair like "four"/"for" also agrees.
+    /// </summary>
+    public static string RomajiKey(string? title) => LongVowels.Replace(Compact(title), match => match.Value[..1]);
+
+    private static readonly Regex LongVowels = new("o[ou]|uu|aa|ii|ee", RegexOptions.CultureInvariant | RegexOptions.Compiled);
+
+    /// <summary>Folds provider format names to one vocabulary: "TV_SHORT", "tv short" and "TV" all become "TV".</summary>
+    public static string? Format(string? format)
+    {
+        if (string.IsNullOrWhiteSpace(format)) return null;
+        var text = Regex.Replace(format.Trim().ToLowerInvariant().Replace('_', ' ').Replace('-', ' '), @"\s+", " ");
+        return text switch
+        {
+            "tv" or "tv short" or "tv series" or "series" => "TV",
+            "movie" or "film" => "Movie",
+            "special" or "tv special" or "specials" => "Special",
+            "ova" or "oad" => "OVA",
+            "ona" or "web" => "ONA",
+            "music" or "music video" => "Music",
+            _ => format.Trim()
+        };
+    }
+
+    /// <summary>True for a status meaning the show has not finished airing, so its episode count may still grow.</summary>
+    public static bool IsUnfinished(string? status)
+    {
+        if (string.IsNullOrWhiteSpace(status)) return false;
+        var text = status.Trim().ToLowerInvariant().Replace('_', ' ');
+        return text.Contains("currently") || text is "current" or "ongoing" or "releasing" or "airing" or "upcoming"
+            or "not yet aired" or "not yet released" or "tba" or "unreleased" or "hiatus";
+    }
 
     /// <summary>Meaningful tokens for fuzzy comparison: stop words removed, roman numerals as digits.</summary>
     public static HashSet<string> Tokens(string? title)

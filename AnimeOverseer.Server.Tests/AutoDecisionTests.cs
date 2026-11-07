@@ -55,7 +55,7 @@ public sealed class AutoDecisionTests : SqliteIntegrationTestBase
         await ImportAsync(db, IncomingOrbit());
 
         var item = Assert.Single(await new AnimeReviewService(db, CreateCache(db)).GetPendingAsync());
-        Assert.Equal(new MatchSuggestion("Merge", existing.Id, "the only conflict-free candidate scored 100 (threshold 90)"), item.Suggestion);
+        Assert.Equal(new MatchSuggestion("Merge", existing.Id, "the only conflict-free candidate scored 95 (threshold 90)"), item.Suggestion);
         Assert.Equal(1, await db.Animes.CountAsync());
     }
 
