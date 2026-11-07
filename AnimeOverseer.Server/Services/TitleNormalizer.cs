@@ -12,13 +12,16 @@ public static class TitleNormalizer
 {
     private static readonly HashSet<string> StopTokens = new(StringComparer.Ordinal) { "the", "a", "an", "of", "season", "part", "cour" };
 
-    /// <summary>Lowercase, accent-free words separated by single spaces. Apostrophes are dropped.</summary>
+    /// <summary>
+    /// Lowercase, accent-free words separated by single spaces, with full-width and other
+    /// compatibility characters folded to their plain forms and digits as ASCII. Apostrophes are dropped.
+    /// </summary>
     public static string Normalize(string? title)
     {
         if (string.IsNullOrWhiteSpace(title)) return string.Empty;
         var result = new StringBuilder(title.Length);
         var previousWasSeparator = true;
-        foreach (var character in title.Trim().Normalize(NormalizationForm.FormD))
+        foreach (var character in title.Trim().Normalize(NormalizationForm.FormKD))
         {
             if (CharUnicodeInfo.GetUnicodeCategory(character) == UnicodeCategory.NonSpacingMark) continue;
             // Apostrophes are commonly omitted by provider and Sonarr/Radarr title sources.
@@ -31,7 +34,14 @@ public static class TitleNormalizer
                 previousWasSeparator = true;
                 continue;
             }
-            if (char.IsLetterOrDigit(character))
+            // FormKD folds full-width forms ("４", "Ｓ"); any other decimal digit becomes ASCII
+            // so numbers in labels always parse.
+            if (char.IsDigit(character))
+            {
+                result.Append((char)('0' + (int)char.GetNumericValue(character)));
+                previousWasSeparator = false;
+            }
+            else if (char.IsLetter(character))
             {
                 result.Append(char.ToLowerInvariant(character));
                 previousWasSeparator = false;
@@ -292,10 +302,10 @@ public static class TitleNormalizer
     }
 
     private static readonly string[] OrdinalWords = ["first", "second", "third", "fourth", "fifth", "sixth", "seventh", "eighth", "ninth", "tenth"];
-    private static readonly Regex JoinedLabel = new(@"^(season|part|cour)(\d{1,2})$", RegexOptions.CultureInvariant | RegexOptions.Compiled);
-    private static readonly Regex NumericOrdinal = new(@"^(\d{1,2})(?:st|nd|rd|th)$", RegexOptions.CultureInvariant | RegexOptions.Compiled);
-    private static readonly Regex ShortSeason = new(@"^s(\d{1,2})$", RegexOptions.CultureInvariant | RegexOptions.Compiled);
-    private static readonly Regex NativeLabel = new(@"^第?(\d{1,2})(期|クール)$", RegexOptions.CultureInvariant | RegexOptions.Compiled);
+    private static readonly Regex JoinedLabel = new(@"^(season|part|cour)([0-9]{1,2})$", RegexOptions.CultureInvariant | RegexOptions.Compiled);
+    private static readonly Regex NumericOrdinal = new(@"^([0-9]{1,2})(?:st|nd|rd|th)$", RegexOptions.CultureInvariant | RegexOptions.Compiled);
+    private static readonly Regex ShortSeason = new(@"^s([0-9]{1,2})$", RegexOptions.CultureInvariant | RegexOptions.Compiled);
+    private static readonly Regex NativeLabel = new(@"^第?([0-9]{1,2})(期|クール)$", RegexOptions.CultureInvariant | RegexOptions.Compiled);
 
     private static string NormalizeToken(string token) => token switch
     {
