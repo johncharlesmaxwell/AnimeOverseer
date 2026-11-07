@@ -34,7 +34,12 @@ public sealed class AnimeReviewService(AnimeDbContext db, AnimeCacheService cach
     public async Task<int> GetPendingNameCountAsync() =>
         (await GetNamesPendingReviewAsync()).Sum(item => item.Names.Count);
 
-    public async Task<List<PendingAnimeReviewItem>> GetPendingAsync()
+    /// <summary>
+    /// The pending queue scored with the saved settings, or with <paramref name="preview"/>
+    /// to see what unsaved settings would do. Scores are always recomputed so a
+    /// change to the weights shows immediately.
+    /// </summary>
+    public async Task<List<PendingAnimeReviewItem>> GetPendingAsync(MatchingSettings? preview = null)
     {
         var reviews = await db.PendingAnimeReviews
             .Where(review => review.Status == "Pending")
@@ -42,13 +47,13 @@ public sealed class AnimeReviewService(AnimeDbContext db, AnimeCacheService cach
             .ToListAsync();
         var ids = reviews.SelectMany(review => JsonSerializer.Deserialize<List<int>>(review.CandidateAnimeIdsJson) ?? []).Distinct().ToList();
         var anime = await db.Animes.Include(item => item.Season).Include(item => item.TitleAliases).Where(item => ids.Contains(item.Id)).ToDictionaryAsync(item => item.Id);
-        var settings = await MatchingSettings.LoadAsync(db);
+        var settings = preview?.Normalized() ?? await MatchingSettings.LoadAsync(db);
         return reviews.Select(review =>
         {
             var incoming = JsonSerializer.Deserialize<AnimeImportSnapshot>(review.PayloadJson) ?? new();
             var candidates = (JsonSerializer.Deserialize<List<int>>(review.CandidateAnimeIdsJson) ?? [])
                 .Where(anime.ContainsKey).Select(id => anime[id]).ToList();
-            var matches = MatchesFor(review, incoming, candidates);
+            var matches = MatchesFor(incoming, candidates, settings.Scoring);
             return new PendingAnimeReviewItem
             {
                 Review = review,
@@ -58,7 +63,7 @@ public sealed class AnimeReviewService(AnimeDbContext db, AnimeCacheService cach
                 // Undone reviews belong to a person; automation stops suggesting for them.
                 Suggestion = settings.Mode == AutoDecisionMode.Off || review.AutoDecisionUndone
                     ? null
-                    : MatchScorer.Suggest(candidates.Where(candidate => matches.ContainsKey(candidate.Id)).Select(candidate => matches[candidate.Id]).ToList(), settings.MergeThreshold)
+                    : MatchScorer.Suggest(candidates.Where(candidate => matches.ContainsKey(candidate.Id)).Select(candidate => matches[candidate.Id]).ToList(), settings)
             };
         })
             // Highest-confidence decisions first; reviews without a live candidate last.
@@ -67,21 +72,20 @@ public sealed class AnimeReviewService(AnimeDbContext db, AnimeCacheService cach
             .ToList();
     }
 
-    private static Dictionary<int, CandidateMatch> MatchesFor(PendingAnimeReview review, AnimeImportSnapshot incoming, List<Anime> candidates)
+    // Scored for display without changing the stored review, so the page reflects
+    // the current weights. Stored evidence is refreshed by imports and rechecks.
+    private static Dictionary<int, CandidateMatch> MatchesFor(AnimeImportSnapshot incoming, List<Anime> candidates, MatchScoring scoring)
     {
-        var stored = string.IsNullOrWhiteSpace(review.MatchEvidenceJson)
-            ? []
-            : JsonSerializer.Deserialize<List<CandidateMatch>>(review.MatchEvidenceJson) ?? [];
-        var matches = stored.ToDictionary(match => match.AnimeId);
-        // Reviews queued before scoring existed have no stored evidence. Score
-        // them for display without changing the stored review.
-        if (candidates.Any(candidate => !matches.ContainsKey(candidate.Id)))
-        {
-            var source = AnimeCacheService.FromSnapshot(incoming);
-            foreach (var candidate in candidates.Where(candidate => !matches.ContainsKey(candidate.Id)))
-                matches[candidate.Id] = MatchScorer.Score(source, candidate);
-        }
-        return matches;
+        var source = AnimeCacheService.FromSnapshot(incoming);
+        return candidates.ToDictionary(candidate => candidate.Id, candidate => MatchScorer.Score(source, candidate, scoring));
+    }
+
+    /// <summary>How the pending queue would be decided under <paramref name="settings"/>.</summary>
+    public async Task<MatchingPreview> PreviewAsync(MatchingSettings settings)
+    {
+        var normalized = settings.Normalized();
+        var items = await GetPendingAsync(normalized);
+        return new MatchingPreview(items, normalized.Scoring);
     }
 
     public async Task<List<AutoResolvedReviewItem>> GetAutoResolvedAsync(int take = 100)
@@ -257,4 +261,27 @@ public sealed class AnimeNameReviewItem
 {
     public Anime Anime { get; init; } = null!;
     public List<string> Names { get; init; } = [];
+}
+
+/// <summary>How the pending queue would be decided under a set of matching settings.</summary>
+public sealed class MatchingPreview(List<PendingAnimeReviewItem> items, MatchScoring scoring)
+{
+    public const string None = "None";
+
+    // Computed once: the page reads these on every render.
+    public List<PendingAnimeReviewItem> Items { get; } = items;
+    public MatchScoring Scoring { get; } = scoring;
+    public int Pending => Items.Count;
+    public List<PendingAnimeReviewItem> WouldMerge { get; } = items.Where(item => item.Suggestion?.Decision == "Merge").ToList();
+    public List<PendingAnimeReviewItem> WouldCreate { get; } = items.Where(item => item.Suggestion?.Decision == "Create").ToList();
+    public List<PendingAnimeReviewItem> NeedPerson { get; } = items.Where(item => item.Suggestion is null).ToList();
+    public int Overruled { get; } = items.Count(item => item.Review.AutoDecisionUndone);
+    public Dictionary<string, List<PendingAnimeReviewItem>> ByConfidence { get; }
+        = items.GroupBy(item => Confidence(item, scoring)).ToDictionary(group => group.Key, group => group.ToList());
+
+    /// <summary>The confidence level of an item's best candidate, or <see cref="None"/> when it has none.</summary>
+    public string ConfidenceOf(PendingAnimeReviewItem item) => Confidence(item, Scoring);
+
+    private static string Confidence(PendingAnimeReviewItem item, MatchScoring scoring)
+        => item.BestMatch is { } best ? MatchScorer.Confidence(best, scoring) : None;
 }

@@ -10,47 +10,57 @@ namespace AnimeOverseer.Server.Services;
 /// </summary>
 public static class MatchScorer
 {
-    // A clean exact main-title match with agreeing date, format, and episode
-    // count reaches 100. Hard negatives cap the score so they always sort last.
-    private const int MainTitleWeight = 45;
-    private const int OriginalTitleWeight = 40;
-    private const int AliasTitleWeight = 30;
-    private const int SimilarTitleWeight = 30;
-    private const int SeasonMismatchPenalty = 25;
-    private const int HardNegativeCap = 10;
+    // With default weights a clean exact main-title match with agreeing date,
+    // format, and episode count reaches 100. Hard negatives cap the score so
+    // they always sort last. Weights are configurable in MatchingSettings.
 
-    public static CandidateMatch Score(Anime source, Anime candidate)
+    public static CandidateMatch Score(Anime source, Anime candidate, MatchScoring? scoring = null)
     {
+        var weights = scoring ?? MatchScoring.Default;
         var evidence = new List<MatchEvidence>();
         AddIdEvidence(source, candidate, evidence);
-        AddTitleEvidence(source, candidate, evidence);
-        AddStartDateEvidence(source.StartDate, candidate.StartDate, evidence);
-        AddTypeEvidence(source.Type, candidate.Type, evidence);
-        AddEpisodeEvidence(source.Episodes, candidate.Episodes, evidence);
+        AddTitleEvidence(source, candidate, weights, evidence);
+        AddStartDateEvidence(source.StartDate, candidate.StartDate, weights, evidence);
+        AddTypeEvidence(source.Type, candidate.Type, weights, evidence);
+        AddEpisodeEvidence(source.Episodes, candidate.Episodes, weights, evidence);
 
         var score = Math.Clamp(evidence.Sum(item => item.Weight), 0, 100);
-        if (evidence.Any(item => item.Kind == MatchEvidenceKind.HardNegative)) score = Math.Min(score, HardNegativeCap);
+        if (evidence.Any(item => item.Kind == MatchEvidenceKind.HardNegative)) score = Math.Min(score, weights.HardConflictCap);
         return new CandidateMatch { AnimeId = candidate.Id, Score = score, Evidence = evidence };
     }
 
-    public static string Confidence(CandidateMatch match) =>
-        HasHardNegative(match) ? "Conflict"
-        : match.Score >= 80 ? "High"
-        : match.Score >= 50 ? "Medium"
-        : "Low";
+    public static string Confidence(CandidateMatch match, MatchScoring? scoring = null)
+    {
+        var weights = scoring ?? MatchScoring.Default;
+        return HasHardNegative(match) ? "Conflict"
+            : match.Score >= weights.HighConfidence ? "High"
+            : match.Score >= weights.MediumConfidence ? "Medium"
+            : "Low";
+    }
+
+    /// <summary>The decision band using only the always-on rules and the given threshold.</summary>
+    public static MatchSuggestion? Suggest(IReadOnlyCollection<CandidateMatch> matches, int mergeThreshold)
+        => Suggest(matches, new MatchingSettings(AutoDecisionMode.Apply, mergeThreshold));
 
     /// <summary>
     /// The decision band for a review's scored candidates, or null when a person
     /// must decide. Create when every candidate has a hard conflict; merge when
-    /// exactly one candidate is conflict-free and it reaches the threshold.
+    /// exactly one candidate is conflict-free and it reaches the threshold. The
+    /// optional rules also merge a clear leader and create when nothing scores well.
     /// </summary>
-    public static MatchSuggestion? Suggest(IReadOnlyCollection<CandidateMatch> matches, int mergeThreshold)
+    public static MatchSuggestion? Suggest(IReadOnlyCollection<CandidateMatch> matches, MatchingSettings settings)
     {
         if (matches.Count == 0) return new("Create", null, "no catalogue candidate remains");
-        var conflictFree = matches.Where(match => !HasHardNegative(match)).ToList();
+        var conflictFree = matches.Where(match => !HasHardNegative(match)).OrderByDescending(match => match.Score).ToList();
         if (conflictFree.Count == 0) return new("Create", null, "every candidate has a hard conflict");
-        if (conflictFree.Count == 1 && conflictFree[0].Score >= mergeThreshold)
-            return new("Merge", conflictFree[0].AnimeId, $"the only conflict-free candidate scored {conflictFree[0].Score} (threshold {mergeThreshold})");
+        var best = conflictFree[0];
+        if (conflictFree.Count == 1 && best.Score >= settings.MergeThreshold)
+            return new("Merge", best.AnimeId, $"the only conflict-free candidate scored {best.Score} (threshold {settings.MergeThreshold})");
+        if (settings.MarginMergeEnabled && conflictFree.Count > 1 && best.Score >= settings.MergeThreshold &&
+            best.Score - conflictFree[1].Score >= settings.MergeMargin)
+            return new("Merge", best.AnimeId, $"the best candidate scored {best.Score} (threshold {settings.MergeThreshold}), {best.Score - conflictFree[1].Score} ahead of the next (margin {settings.MergeMargin})");
+        if (settings.LowScoreCreateEnabled && best.Score < settings.CreateBelowScore)
+            return new("Create", null, $"the best conflict-free candidate scored {best.Score}, below {settings.CreateBelowScore}");
         return null;
     }
 
@@ -74,7 +84,7 @@ public static class MatchScorer
             (relation.AniListId is > 0 && relation.AniListId == candidate.AniListId) ||
             (relation.MalId is > 0 && relation.MalId == candidate.MALId));
 
-    private static void AddTitleEvidence(Anime source, Anime candidate, List<MatchEvidence> evidence)
+    private static void AddTitleEvidence(Anime source, Anime candidate, MatchScoring weights, List<MatchEvidence> evidence)
     {
         var sourceMain = TitleNormalizer.Compact(source.Title);
         var sourceOriginal = TitleNormalizer.Compact(source.OriginalTitle);
@@ -84,11 +94,11 @@ public static class MatchScorer
         var candidateNames = AllNames(candidate).Select(TitleNormalizer.Compact).Where(name => name.Length > 0).ToHashSet(StringComparer.Ordinal);
 
         if (sourceMain.Length > 0 && sourceMain == candidateMain)
-            evidence.Add(Positive("Title", "Main titles match exactly", MainTitleWeight));
+            evidence.Add(Positive("Title", "Main titles match exactly", weights.MainTitleExact));
         else if (sourceOriginal.Length > 0 && sourceOriginal == candidateOriginal)
-            evidence.Add(Positive("Title", "Original (romaji/native) titles match exactly", OriginalTitleWeight));
+            evidence.Add(Positive("Title", "Original (romaji/native) titles match exactly", weights.OriginalTitleExact));
         else if (sourceNames.Overlaps(candidateNames))
-            evidence.Add(Positive("Title", "Matched through an alternative title or alias", AliasTitleWeight));
+            evidence.Add(Positive("Title", "Matched through an alternative title or alias", weights.AliasMatch));
         else
         {
             var similarity = AllNames(source).Select(TitleNormalizer.Tokens).Where(tokens => tokens.Count >= 2)
@@ -96,7 +106,7 @@ public static class MatchScorer
                     .Select(right => TitleNormalizer.TokenScore(left, right)))
                 .DefaultIfEmpty(0).Max();
             evidence.Add(similarity > 0
-                ? Positive("Title", $"Titles are {similarity:P0} similar", (int)Math.Round(SimilarTitleWeight * similarity))
+                ? Positive("Title", $"Titles are {similarity:P0} similar", (int)Math.Round(weights.SimilarTitleMax * similarity))
                 : Negative("Title", "No shared title words", 0));
         }
 
@@ -105,10 +115,10 @@ public static class MatchScorer
         var sourceSeason = TitleNormalizer.SeasonNumber(source.Title);
         var candidateSeason = TitleNormalizer.SeasonNumber(candidate.Title);
         if (sourceSeason != candidateSeason)
-            evidence.Add(Negative("Season", $"Titles name different seasons ({sourceSeason} vs {candidateSeason})", -SeasonMismatchPenalty));
+            evidence.Add(Negative("Season", $"Titles name different seasons ({sourceSeason} vs {candidateSeason})", -weights.SeasonMismatchPenalty));
     }
 
-    private static void AddStartDateEvidence(DateTime? source, DateTime? candidate, List<MatchEvidence> evidence)
+    private static void AddStartDateEvidence(DateTime? source, DateTime? candidate, MatchScoring weights, List<MatchEvidence> evidence)
     {
         if (source is null || candidate is null)
         {
@@ -116,13 +126,17 @@ public static class MatchScorer
             return;
         }
         var days = Math.Abs((source.Value - candidate.Value).TotalDays);
-        if (days <= 31) evidence.Add(Positive("Start date", "Start dates within a month", 25));
-        else if (days <= 183) evidence.Add(Positive("Start date", $"Start dates {days / 30:0} months apart", 10));
-        else if (days < 365) evidence.Add(Negative("Start date", $"Start dates {days / 30:0} months apart", -10));
-        else evidence.Add(HardNegative("Start date", $"Start dates {days / 365:0.#} years apart ({source:MMM yyyy} vs {candidate:MMM yyyy})"));
+        if (days <= 31) evidence.Add(Positive("Start date", "Start dates within a month", weights.StartWithinMonth));
+        else if (days <= 183) evidence.Add(Positive("Start date", $"Start dates {days / 30:0} months apart", weights.StartWithinSixMonths));
+        else if (days < 365) evidence.Add(Negative("Start date", $"Start dates {days / 30:0} months apart", -weights.StartUnderYearPenalty));
+        else
+        {
+            var detail = $"Start dates {days / 365:0.#} years apart ({source:MMM yyyy} vs {candidate:MMM yyyy})";
+            evidence.Add(weights.StartYearApartIsConflict ? HardNegative("Start date", detail) : Negative("Start date", detail, -weights.StartYearApartPenalty));
+        }
     }
 
-    private static void AddTypeEvidence(string? source, string? candidate, List<MatchEvidence> evidence)
+    private static void AddTypeEvidence(string? source, string? candidate, MatchScoring weights, List<MatchEvidence> evidence)
     {
         if (string.IsNullOrWhiteSpace(source) || string.IsNullOrWhiteSpace(candidate))
         {
@@ -130,23 +144,23 @@ public static class MatchScorer
             return;
         }
         if (string.Equals(source.Trim(), candidate.Trim(), StringComparison.OrdinalIgnoreCase))
-            evidence.Add(Positive("Format", $"Both are {source.Trim()}", 15));
-        else if (IsMovie(source) != IsMovie(candidate))
+            evidence.Add(Positive("Format", $"Both are {source.Trim()}", weights.FormatSame));
+        else if (weights.MovieVsSeriesIsConflict && IsMovie(source) != IsMovie(candidate))
             evidence.Add(HardNegative("Format", $"Movie vs series ({source.Trim()} vs {candidate.Trim()})"));
         else
-            evidence.Add(Negative("Format", $"Formats differ ({source.Trim()} vs {candidate.Trim()})", -5));
+            evidence.Add(Negative("Format", $"Formats differ ({source.Trim()} vs {candidate.Trim()})", -weights.FormatDifferPenalty));
     }
 
-    private static void AddEpisodeEvidence(int? source, int? candidate, List<MatchEvidence> evidence)
+    private static void AddEpisodeEvidence(int? source, int? candidate, MatchScoring weights, List<MatchEvidence> evidence)
     {
         if (source is not > 0 || candidate is not > 0)
         {
             evidence.Add(Neutral("Episodes", "Episode count unknown on one side"));
             return;
         }
-        if (source == candidate) evidence.Add(Positive("Episodes", $"Both have {source} episodes", 15));
-        else if (Math.Abs(source.Value - candidate.Value) <= 1) evidence.Add(Positive("Episodes", $"Episode counts nearly agree ({source} vs {candidate})", 8));
-        else evidence.Add(Negative("Episodes", $"Episode counts differ ({source} vs {candidate})", -10));
+        if (source == candidate) evidence.Add(Positive("Episodes", $"Both have {source} episodes", weights.EpisodesSame));
+        else if (Math.Abs(source.Value - candidate.Value) <= 1) evidence.Add(Positive("Episodes", $"Episode counts nearly agree ({source} vs {candidate})", weights.EpisodesNearly));
+        else evidence.Add(Negative("Episodes", $"Episode counts differ ({source} vs {candidate})", -weights.EpisodesDifferPenalty));
     }
 
     private static bool IsMovie(string type) => type.Trim().Equals("movie", StringComparison.OrdinalIgnoreCase);

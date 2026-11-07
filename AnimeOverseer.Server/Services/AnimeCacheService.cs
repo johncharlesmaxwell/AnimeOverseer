@@ -617,7 +617,7 @@ public class AnimeCacheService(AnimeDbContext db, AniListApiService aniList, Jik
         var reason = candidates.Count > 1
             ? "More than one title/alias candidate was found"
             : "Title or alias match needs confirmation";
-        var matches = ScoreCandidates(source, candidates);
+        var matches = ScoreCandidates(source, candidates, (await MatchingSettings.LoadAsync(db, ct)).Scoring);
         // An expired snooze reopens the deferred review with the fresh import.
         var review = prior ?? new PendingAnimeReview { SeasonId = fixedSeasonId ?? await UnknownSeasonIdAsync(ct), SourceName = "Catalogue import" };
         review.SourceAniListId = source.AniListId;
@@ -635,9 +635,9 @@ public class AnimeCacheService(AnimeDbContext db, AniListApiService aniList, Jik
         return review;
     }
 
-    private static List<CandidateMatch> ScoreCandidates(Anime source, IEnumerable<Anime> candidates)
+    private static List<CandidateMatch> ScoreCandidates(Anime source, IEnumerable<Anime> candidates, MatchScoring scoring)
         => candidates.DistinctBy(candidate => candidate.Id)
-            .Select(candidate => MatchScorer.Score(source, candidate))
+            .Select(candidate => MatchScorer.Score(source, candidate, scoring))
             .OrderByDescending(match => match.Score)
             .ToList();
 
@@ -711,7 +711,8 @@ public class AnimeCacheService(AnimeDbContext db, AniListApiService aniList, Jik
 
         if (viable.Count > 0)
         {
-            var matches = ScoreCandidates(source, viable);
+            var settings = await MatchingSettings.LoadAsync(db, ct);
+            var matches = ScoreCandidates(source, viable, settings.Scoring);
             review.CandidateAnimeIdsJson = JsonSerializer.Serialize(viable.Select(candidate => candidate.Id));
             review.MatchScore = matches[0].Score;
             review.MatchEvidenceJson = JsonSerializer.Serialize(matches);
@@ -733,7 +734,7 @@ public class AnimeCacheService(AnimeDbContext db, AniListApiService aniList, Jik
         var review = await db.PendingAnimeReviews.FirstOrDefaultAsync(item => item.Id == reviewId && item.Status == "Pending", ct);
         if (review is null || review.AutoDecisionUndone || string.IsNullOrWhiteSpace(review.MatchEvidenceJson)) return PendingReviewRecheckOutcome.Unchanged;
         var matches = JsonSerializer.Deserialize<List<CandidateMatch>>(review.MatchEvidenceJson) ?? [];
-        if (MatchScorer.Suggest(matches, settings.MergeThreshold) is not { } suggestion) return PendingReviewRecheckOutcome.Unchanged;
+        if (MatchScorer.Suggest(matches, settings) is not { } suggestion) return PendingReviewRecheckOutcome.Unchanged;
         if (!await ResolveAutomaticallyAsync(review, suggestion.Decision, suggestion.AnimeId, suggestion.Explanation, ct)) return PendingReviewRecheckOutcome.Unchanged;
         return suggestion.Decision == "Merge" ? PendingReviewRecheckOutcome.Merged : PendingReviewRecheckOutcome.Created;
     }
