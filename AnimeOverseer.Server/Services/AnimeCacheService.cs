@@ -914,12 +914,18 @@ public class AnimeCacheService(AnimeDbContext db, AniListApiService aniList, Jik
         }
     }
 
-    // Each name is indexed exactly and with romaji long vowels folded ("~"-prefixed so
-    // the two forms never collide), letting "Yuuki" find a row titled "Yūki".
+    // Each name is indexed exactly, with romaji long vowels folded ("~"), and with season
+    // labels in one form ("#"); the prefixes keep the forms from colliding. "Yuuki" finds a
+    // row titled "Yūki", and "Frieren 2nd Season" finds one titled "Frieren Season 2".
     private static IEnumerable<string> Names(Anime anime)
-        => new[] { anime.Title, anime.OriginalTitle }.Concat(anime.AlternativeTitles).Concat(anime.TitleAliases.Select(alias => alias.Title))
-            .Select(TitleNormalizer.Compact).Where(name => name.Length >= 3)
-            .SelectMany(name => new[] { name, "~" + TitleNormalizer.RomajiKey(name) })
+        => RawNames(anime)
+            .Where(title => TitleNormalizer.Compact(title).Length >= 3)
+            .SelectMany(title => new[]
+            {
+                TitleNormalizer.Compact(title),
+                "~" + TitleNormalizer.RomajiKey(title),
+                "#" + TitleNormalizer.SeasonCanonical(title).Replace(" ", string.Empty, StringComparison.Ordinal)
+            })
             .Distinct();
 
     private static double BestAliasScore(Anime source, Anime existing)

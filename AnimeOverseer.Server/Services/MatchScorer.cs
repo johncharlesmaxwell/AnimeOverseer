@@ -123,12 +123,13 @@ public static class MatchScorer
                 : Negative("Title", "No shared title words", 0));
         }
 
-        // Franchise synonyms often attach a season-one name to a later season.
-        // Compare the seasons the main titles name, since aliases rarely carry them.
-        var sourceSeason = TitleNormalizer.SeasonNumber(source.Title);
-        var candidateSeason = TitleNormalizer.SeasonNumber(candidate.Title);
-        if (sourceSeason != candidateSeason)
-            evidence.Add(Negative("Season", $"Titles name different seasons ({sourceSeason} vs {candidateSeason})", -weights.SeasonMismatchPenalty));
+        // Franchise synonyms often attach a season-one name to a later season. Compare
+        // the seasons and parts the main and original titles name, since aliases rarely
+        // carry them and a romaji title often says "2nd Season" when the English one doesn't.
+        var sourceInstallment = TitleNormalizer.InstallmentOf(source.Title, source.OriginalTitle);
+        var candidateInstallment = TitleNormalizer.InstallmentOf(candidate.Title, candidate.OriginalTitle);
+        if (sourceInstallment.ConflictsWith(candidateInstallment))
+            evidence.Add(Negative("Season", $"Titles name different seasons ({sourceInstallment} vs {candidateInstallment})", -weights.SeasonMismatchPenalty));
     }
 
     /// <summary>

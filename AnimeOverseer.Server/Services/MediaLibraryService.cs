@@ -6,63 +6,16 @@ namespace AnimeOverseer.Server.Services;
 
 public class MediaLibraryService(IServiceScopeFactory scopeFactory, IHttpClientFactory httpClientFactory)
 {
-    private HashSet<string> _sonarrTitles = new(StringComparer.OrdinalIgnoreCase);
-    private HashSet<string> _radarrTitles = new(StringComparer.OrdinalIgnoreCase);
+    private LibraryTitles _sonarrTitles = LibraryTitles.Empty;
+    private LibraryTitles _radarrTitles = LibraryTitles.Empty;
     private DateTime _lastRefreshed = DateTime.MinValue;
     private readonly SemaphoreSlim _lock = new(1, 1);
 
-    public bool IsInSonarr(string? title) => !string.IsNullOrWhiteSpace(title) && _sonarrTitles.Contains(title.Trim());
-    public bool IsInSonarr(Anime anime)
-    {
-        if (anime == null) return false;
+    public bool IsInSonarr(string? title) => _sonarrTitles.ContainsExact(title);
+    public bool IsInSonarr(Anime anime) => anime != null && _sonarrTitles.Matches(anime);
 
-        // Check exact matches first (existing logic)
-        if (!string.IsNullOrWhiteSpace(anime.Title) && _sonarrTitles.Contains(anime.Title.Trim()))
-            return true;
-        if (!string.IsNullOrWhiteSpace(anime.OriginalTitle) && _sonarrTitles.Contains(anime.OriginalTitle.Trim()))
-            return true;
-
-        // Check enhanced matching for variations (like "Title" vs "Title Season 2")
-        var animeTitles = GetTitles(anime);
-
-        foreach (var sonarrTitle in _sonarrTitles)
-        {
-            foreach (var animeTitle in animeTitles)
-            {
-                if (TitlesMatch(animeTitle, sonarrTitle))
-                    return true;
-            }
-        }
-
-        return false;
-    }
-
-    public bool IsInRadarr(string? title) => !string.IsNullOrWhiteSpace(title) && _radarrTitles.Contains(title.Trim());
-    public bool IsInRadarr(Anime anime)
-    {
-        if (anime == null) return false;
-
-        // Check exact matches first (existing logic)
-        if (!string.IsNullOrWhiteSpace(anime.Title) && _radarrTitles.Contains(anime.Title.Trim()))
-            return true;
-        if (!string.IsNullOrWhiteSpace(anime.OriginalTitle) && _radarrTitles.Contains(anime.OriginalTitle.Trim()))
-            return true;
-
-        // Check enhanced matching for variations (like "Title" vs "Title Season 2")
-        var animeTitles = GetTitles(anime);
-
-        foreach (var radarrTitle in _radarrTitles)
-        {
-            foreach (var animeTitle in animeTitles)
-            {
-                if (TitlesMatch(animeTitle, radarrTitle))
-                    return true;
-            }
-        }
-
-        return false;
-    }
-
+    public bool IsInRadarr(string? title) => _radarrTitles.ContainsExact(title);
+    public bool IsInRadarr(Anime anime) => anime != null && _radarrTitles.Matches(anime);
 
     internal static bool TitlesMatch(string title1, string title2)
     {
@@ -75,20 +28,59 @@ public class MediaLibraryService(IServiceScopeFactory scopeFactory, IHttpClientF
         if (t1 == t2)
             return true;
 
-        var shorter = t1.Length < t2.Length ? t1 : t2;
-        var longer = t1.Length < t2.Length ? t2 : t1;
+        // Only an explicit trailing season label may differ ("Season 2", "2nd Cour",
+        // "The Final Season"...). General prefix matching made titles such as "Blue Lock"
+        // match unrelated entries beginning with those words. A library entry with no
+        // label covers every season; two labels must name the same season and part.
+        var (base1, label1) = TitleNormalizer.SplitSeasonSuffix(t1);
+        var (base2, label2) = TitleNormalizer.SplitSeasonSuffix(t2);
+        if (base1.Length == 0 || base1 != base2)
+            return false;
+        return label1 is null || label2 is null || label1 == label2;
+    }
 
-        // A title must end at a word boundary and the remaining text must be an
-        // explicit season label. General substring matching made titles such as
-        // "Blue Lock" match unrelated entries beginning with those words.
-        if (longer.StartsWith(shorter, StringComparison.Ordinal) &&
-            longer.Length > shorter.Length &&
-            longer[shorter.Length] == ' ')
+    /// <summary>
+    /// Library titles indexed by their name without a trailing season label, so a lookup
+    /// splits each anime title once instead of comparing it with every library title.
+    /// Matches exactly what <see cref="TitlesMatch"/> accepts.
+    /// </summary>
+    internal sealed class LibraryTitles
+    {
+        public static readonly LibraryTitles Empty = new([]);
+
+        private readonly HashSet<string> _exact = new(StringComparer.OrdinalIgnoreCase);
+        private readonly HashSet<string> _normalized = new(StringComparer.Ordinal);
+        private readonly Dictionary<string, List<Installment?>> _labelsByBase = new(StringComparer.Ordinal);
+
+        public LibraryTitles(IEnumerable<string> titles)
         {
-            return TitleNormalizer.IsSeasonIndicator(longer[(shorter.Length + 1)..]);
+            foreach (var title in titles.Where(title => !string.IsNullOrWhiteSpace(title)).Select(title => title.Trim()))
+            {
+                _exact.Add(title);
+                var normalized = TitleNormalizer.Normalize(title);
+                if (normalized.Length == 0) continue;
+                _normalized.Add(normalized);
+                var (name, label) = TitleNormalizer.SplitSeasonSuffix(normalized);
+                if (name.Length == 0) continue;
+                if (!_labelsByBase.TryGetValue(name, out var labels)) _labelsByBase[name] = labels = [];
+                labels.Add(label);
+            }
         }
 
-        return false;
+        public bool ContainsExact(string? title) => !string.IsNullOrWhiteSpace(title) && _exact.Contains(title.Trim());
+
+        public bool Matches(Anime anime)
+            => ContainsExact(anime.Title) || ContainsExact(anime.OriginalTitle) || GetTitles(anime).Any(Matches);
+
+        public bool Matches(string title)
+        {
+            var normalized = TitleNormalizer.Normalize(title);
+            if (normalized.Length == 0) return false;
+            if (_normalized.Contains(normalized)) return true;
+            var (name, label) = TitleNormalizer.SplitSeasonSuffix(normalized);
+            return name.Length > 0 && _labelsByBase.TryGetValue(name, out var labels)
+                && labels.Any(libraryLabel => libraryLabel is null || label is null || libraryLabel == label);
+        }
     }
 
     private static IReadOnlyList<string> GetTitles(Anime anime) =>
@@ -140,13 +132,7 @@ public class MediaLibraryService(IServiceScopeFactory scopeFactory, IHttpClientF
             var arr = await resp.Content.ReadFromJsonAsync<JsonArray>();
             if (arr == null) return;
 
-            var titles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            foreach (var item in arr.OfType<JsonObject>())
-            {
-                var t = item["title"]?.GetValue<string>();
-                if (!string.IsNullOrWhiteSpace(t)) titles.Add(t.Trim());
-            }
-            _sonarrTitles = titles;
+            _sonarrTitles = new LibraryTitles(arr.OfType<JsonObject>().Select(item => item["title"]?.GetValue<string>() ?? string.Empty));
         }
         catch { /* silently ignore — indicator simply won't show if Sonarr is unreachable */ }
     }
@@ -170,13 +156,7 @@ public class MediaLibraryService(IServiceScopeFactory scopeFactory, IHttpClientF
             var arr = await resp.Content.ReadFromJsonAsync<JsonArray>();
             if (arr == null) return;
 
-            var titles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            foreach (var item in arr.OfType<JsonObject>())
-            {
-                var t = item["title"]?.GetValue<string>();
-                if (!string.IsNullOrWhiteSpace(t)) titles.Add(t.Trim());
-            }
-            _radarrTitles = titles;
+            _radarrTitles = new LibraryTitles(arr.OfType<JsonObject>().Select(item => item["title"]?.GetValue<string>() ?? string.Empty));
         }
         catch { /* silently ignore */ }
     }

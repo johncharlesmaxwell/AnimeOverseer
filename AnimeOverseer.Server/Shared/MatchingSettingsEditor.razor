@@ -66,7 +66,7 @@ else
                     <label>Original (romaji/native) titles match <input type="number" min="0" max="100" @bind="_form.Scoring.OriginalTitleExact" @bind:after="Changed" /></label>
                     <label>Alternative title or alias matches <input type="number" min="0" max="100" @bind="_form.Scoring.AliasMatch" @bind:after="Changed" /></label>
                     <label title="Fully similar titles earn all of these points; partly similar titles earn a share">Similar titles (up to) <input type="number" min="0" max="100" @bind="_form.Scoring.SimilarTitleMax" @bind:after="Changed" /></label>
-                    <label class="matching-penalty">Titles name different seasons <input type="number" min="0" max="100" @bind="_form.Scoring.SeasonMismatchPenalty" @bind:after="Changed" /></label>
+                    <label class="matching-penalty" title="Read from the main and original titles: Season 2, 2nd Season, S2, Part 2, Cour 2, Final Season, Zoku, Shippuden, 第2期">Titles name different seasons or parts <input type="number" min="0" max="100" @bind="_form.Scoring.SeasonMismatchPenalty" @bind:after="Changed" /></label>
                     <label class="matching-toggle" title="An alias used by 3 catalogue entries earns a third of the alias points"><input type="checkbox" @bind="_form.Scoring.ScaleSharedAliases" @bind:after="Changed" /> Aliases shared by several entries count for less</label>
                     <label class="matching-toggle" title="Yuuki, Yūki and Yuki; Toukyou and Tokyo"><input type="checkbox" @bind="_form.Scoring.MatchRomajiSpellings" @bind:after="Changed" /> Match romaji long-vowel spellings</label>
                 </fieldset>
