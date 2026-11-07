@@ -11,10 +11,10 @@
             @foreach (var item in _items)
             {
                 <article class="name-review-card">
-                    <a href="/anime/@item.Anime.Id" class="name-review-poster" title="Open @item.Anime.Title">
+                    <a href="/anime/@item.Anime.Id" class="name-review-poster" title="Open @NameOf(item.Anime)">
                         @if (!string.IsNullOrWhiteSpace(item.Anime.DisplayImageUrl))
                         {
-                            <img src="@(item.Anime.DisplayLocalImagePath ?? item.Anime.DisplayImageUrl)" alt="@item.Anime.Title poster" />
+                            <img src="@(item.Anime.DisplayLocalImagePath ?? item.Anime.DisplayImageUrl)" alt="@NameOf(item.Anime) poster" />
                         }
                         else
                         {
@@ -23,7 +23,21 @@
                     </a>
                     <div class="name-review-current">
                         <span class="review-label">Current name</span>
-                        <h3><a href="/anime/@item.Anime.Id">@item.Anime.Title</a></h3>
+                        @if (string.IsNullOrWhiteSpace(item.Anime.Title))
+                        {
+                            <h3 class="name-review-missing">No English name yet</h3>
+                            @if (!string.IsNullOrWhiteSpace(item.Anime.OriginalTitle))
+                            {
+                                <p class="name-review-original">Original: @item.Anime.OriginalTitle</p>
+                            }
+                        }
+                        else
+                        {
+                            <div class="name-review-current-title">
+                                <h3><a href="/anime/@item.Anime.Id">@item.Anime.Title</a></h3>
+                                <button class="name-review-confirm" title="Keep this name" aria-label="Keep @item.Anime.Title as the English name" @onclick="() => ConfirmCurrentAsync(item.Anime.Id)">✓</button>
+                            </div>
+                        }
                         <p>@item.Anime.Season.Year @item.Anime.Season.Name</p>
                         <a class="review-record-link" href="/anime/@item.Anime.Id">Open record →</a>
                     </div>
@@ -49,6 +63,8 @@
     protected override async Task OnInitializedAsync() => await ReloadAsync();
     private async Task ReloadAsync() => _items = await ReviewService.GetNamesPendingReviewAsync();
     private async Task SelectNameAsync(int animeId, string name) { await ReviewService.SetMainEnglishTitleAsync(animeId, name); await ReloadAsync(); }
+    private static string NameOf(AnimeOverseer.Server.Models.Anime anime) => string.IsNullOrWhiteSpace(anime.Title) ? anime.OriginalTitle ?? "record" : anime.Title;
+    private async Task ConfirmCurrentAsync(int animeId) { await ReviewService.ConfirmCurrentTitleAsync(animeId); await ReloadAsync(); }
     private string CustomName(int animeId) => _customNames.GetValueOrDefault(animeId, string.Empty);
     private void SetCustomName(int animeId, string? name) => _customNames[animeId] = name ?? string.Empty;
     private async Task SelectCustomNameAsync(int animeId) { var name = CustomName(animeId); if (string.IsNullOrWhiteSpace(name)) return; await ReviewService.SetMainEnglishTitleAsync(animeId, name, allowCustom: true); await ReloadAsync(); }

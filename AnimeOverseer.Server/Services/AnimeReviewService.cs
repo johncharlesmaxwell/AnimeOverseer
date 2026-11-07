@@ -179,10 +179,22 @@ public sealed class AnimeReviewService(AnimeDbContext db, AnimeCacheService cach
             || string.Equals(anime.OriginalTitle, title, StringComparison.OrdinalIgnoreCase)
             || anime.TitleAliases.Any(alias => string.Equals(alias.Title, title, StringComparison.OrdinalIgnoreCase));
         if (!isHeld && !allowCustom) return false;
-        if (!string.Equals(anime.Title, title, StringComparison.OrdinalIgnoreCase) &&
+        if (!string.IsNullOrWhiteSpace(anime.Title) &&
+            !string.Equals(anime.Title, title, StringComparison.OrdinalIgnoreCase) &&
             !anime.TitleAliases.Any(alias => string.Equals(alias.Title, anime.Title, StringComparison.OrdinalIgnoreCase)))
             db.AnimeTitleAliases.Add(new AnimeTitleAlias { AnimeId = anime.Id, Title = anime.Title });
         anime.Title = title;
+        anime.HasEnglishTitle = true;
+        anime.NamesReviewed = true;
+        await db.SaveChangesAsync();
+        return true;
+    }
+
+    /// <summary>Keeps the current title as the main English name and takes the record out of name review.</summary>
+    public async Task<bool> ConfirmCurrentTitleAsync(int animeId)
+    {
+        var anime = await db.Animes.FirstOrDefaultAsync(item => item.Id == animeId);
+        if (anime is null || string.IsNullOrWhiteSpace(anime.Title)) return false;
         anime.HasEnglishTitle = true;
         anime.NamesReviewed = true;
         await db.SaveChangesAsync();
