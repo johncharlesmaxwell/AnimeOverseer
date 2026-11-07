@@ -1,0 +1,44 @@
+@using AnimeOverseer.Server.Services
+@inject AnimeReviewService ReviewService
+
+<section class="settings-card review-automation-settings">
+    <h3>Automatic decisions</h3>
+    <p>Create as new when every candidate has a hard conflict (provider IDs, a franchise relation, movie vs series, or start dates a year apart). Merge when exactly one candidate is conflict-free and scores at least the threshold.</p>
+    @if (_settings is null) { <p class="review-muted">Loading…</p> }
+    else
+    {
+        <div class="review-automation-form">
+            <label>Mode <select @bind="_editMode"><option value="@AutoDecisionMode.Off">Off</option><option value="@AutoDecisionMode.Suggest">Suggest only (dry run)</option><option value="@AutoDecisionMode.Apply">Apply automatically</option></select></label>
+            <label>Merge threshold <input type="number" min="@MatchingSettings.MinimumMergeThreshold" max="100" @bind="_editThreshold" /></label>
+            <label title="A deferred review is not asked again until this many days have passed">Defer for (days) <input type="number" min="1" max="@MatchingSettings.MaximumDeferDays" @bind="_editDeferDays" /></label>
+            <button @onclick="SaveAsync">Save</button>
+            @if (!string.IsNullOrEmpty(_notice)) { <span>@_notice</span> }
+        </div>
+        <p class="review-muted">Applied after each import and each provider ID check. Existing suggestions apply the next time you run Check provider IDs on the Review matches tab.</p>
+    }
+</section>
+
+@code {
+    private MatchingSettings? _settings;
+    private AutoDecisionMode _editMode;
+    private int _editThreshold;
+    private int _editDeferDays;
+    private string? _notice;
+
+    protected override async Task OnInitializedAsync() => await LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        _settings = await ReviewService.GetMatchingSettingsAsync();
+        _editMode = _settings.Mode;
+        _editThreshold = _settings.MergeThreshold;
+        _editDeferDays = _settings.DeferDays;
+    }
+
+    private async Task SaveAsync()
+    {
+        await ReviewService.SaveMatchingSettingsAsync(new MatchingSettings(_editMode, _editThreshold, _editDeferDays));
+        await LoadAsync();
+        _notice = "Saved.";
+    }
+}

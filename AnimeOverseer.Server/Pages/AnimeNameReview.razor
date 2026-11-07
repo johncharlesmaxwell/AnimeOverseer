@@ -1,5 +1,6 @@
 @using AnimeOverseer.Server.Services
 @inject AnimeReviewService ReviewService
+@inject SettingsService SettingsService
 
 <div class="name-review-page">
     <div class="review-heading"><div><h2>Review names</h2><p>Choose the primary English name for each catalogue entry. A name disappears from this list after it is selected.</p></div></div>
@@ -62,16 +63,20 @@
 @code {
     private List<AnimeNameReviewItem>? _items;
     private readonly Dictionary<int, string> _customNames = [];
-    protected override async Task OnInitializedAsync() => await ReloadAsync();
+    protected override async Task OnInitializedAsync()
+    {
+        _pageSize = ReviewPagingSettings.Read(await SettingsService.GetAsync(ReviewPagingSettings.NamesKey));
+        await ReloadAsync();
+    }
     private int _page = 1;
-    private int _pageSize = ReviewPager.DefaultPageSize;
+    private int _pageSize = ReviewPagingSettings.DefaultPageSize;
     private async Task ReloadAsync()
     {
         _items = await ReviewService.GetNamesPendingReviewAsync();
         _page = ReviewPager.Clamp(_page, _items.Count, _pageSize);
     }
     private void GoToPage(int page) => _page = ReviewPager.Clamp(page, _items?.Count ?? 0, _pageSize);
-    private void SetPageSize(int size) { _pageSize = size; _page = 1; }
+    private async Task SetPageSize(int size) { _pageSize = size; _page = 1; await SettingsService.SetAsync(ReviewPagingSettings.NamesKey, size.ToString()); }
     private async Task SelectNameAsync(int animeId, string name) { await ReviewService.SetMainEnglishTitleAsync(animeId, name); await ReloadAsync(); }
     private static string NameOf(AnimeOverseer.Server.Models.Anime anime) => string.IsNullOrWhiteSpace(anime.Title) ? anime.OriginalTitle ?? "record" : anime.Title;
     private async Task ConfirmCurrentAsync(int animeId) { await ReviewService.ConfirmCurrentTitleAsync(animeId); await ReloadAsync(); }

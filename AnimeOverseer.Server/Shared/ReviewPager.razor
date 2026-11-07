@@ -1,4 +1,5 @@
 @* Previous/Next paging for an in-memory review list. The parent owns Page and PageSize and slices its own list. *@
+@using AnimeOverseer.Server.Services
 @if (Total > PageSizes[0])
 {
     <nav class="review-paging" aria-label="@Label">
@@ -17,8 +18,7 @@
 }
 
 @code {
-    public static readonly int[] PageSizes = [12, 24, 48, 96];
-    public const int DefaultPageSize = 24;
+    private static int[] PageSizes => ReviewPagingSettings.PageSizes;
 
     [Parameter, EditorRequired] public int Total { get; set; }
     [Parameter, EditorRequired] public int Page { get; set; }
