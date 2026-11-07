@@ -1,0 +1,37 @@
+@* Previous/Next paging for an in-memory review list. The parent owns Page and PageSize and slices its own list. *@
+@if (Total > PageSizes[0])
+{
+    <nav class="review-paging" aria-label="@Label">
+        <span class="review-paging-info" aria-live="polite">@(Total == 0 ? 0 : (Page - 1) * PageSize + 1)–@Math.Min(Page * PageSize, Total) of @Total</span>
+        <div class="review-paging-controls">
+            <button disabled="@(Page <= 1)" @onclick="() => PageChanged.InvokeAsync(Page - 1)">Previous</button>
+            <span>Page @Page of @PageCount(Total, PageSize)</span>
+            <button disabled="@(Page >= PageCount(Total, PageSize))" @onclick="() => PageChanged.InvokeAsync(Page + 1)">Next</button>
+        </div>
+        <label>Per page
+            <select value="@PageSize" @onchange="args => PageSizeChanged.InvokeAsync(int.Parse(args.Value!.ToString()!))">
+                @foreach (var size in PageSizes) { <option value="@size">@size</option> }
+            </select>
+        </label>
+    </nav>
+}
+
+@code {
+    public static readonly int[] PageSizes = [12, 24, 48, 96];
+    public const int DefaultPageSize = 24;
+
+    [Parameter, EditorRequired] public int Total { get; set; }
+    [Parameter, EditorRequired] public int Page { get; set; }
+    [Parameter, EditorRequired] public int PageSize { get; set; }
+    [Parameter] public EventCallback<int> PageChanged { get; set; }
+    [Parameter] public EventCallback<int> PageSizeChanged { get; set; }
+    [Parameter] public string Label { get; set; } = "Review pages";
+
+    public static int PageCount(int total, int pageSize) => Math.Max(1, (int)Math.Ceiling(total / (double)pageSize));
+
+    /// <summary>Keeps a page number inside the list after items are added or removed.</summary>
+    public static int Clamp(int page, int total, int pageSize) => Math.Clamp(page, 1, PageCount(total, pageSize));
+
+    public static IEnumerable<T> Slice<T>(IReadOnlyList<T> items, int page, int pageSize) =>
+        items.Skip((Clamp(page, items.Count, pageSize) - 1) * pageSize).Take(pageSize);
+}

@@ -23,7 +23,7 @@
         <p class="review-muted">Applied after each import and each provider ID check. Existing suggestions apply the next time you run Check provider IDs.</p>
     </details>
     <div class="review-tabs" role="tablist">
-        <button role="tab" class="@(_tab == "pending" ? "active" : "")" aria-selected="@(_tab == "pending")" @onclick='() => _tab = "pending"'>Needs review (@(_items?.Count ?? 0))</button>
+        <button role="tab" class="@(_tab == "pending" ? "active" : "")" aria-selected="@(_tab == "pending")" @onclick='() => { _tab = "pending"; _page = 1; }'>Needs review (@(_items?.Count ?? 0))</button>
         <button role="tab" class="@(_tab == "auto" ? "active" : "")" aria-selected="@(_tab == "auto")" @onclick="ShowAutoResolvedAsync">Auto-resolved (@_autoResolvedCount)</button>
         <button role="tab" class="@(_tab == "deferred" ? "active" : "")" aria-selected="@(_tab == "deferred")" @onclick="ShowDeferredAsync">Deferred (@_deferredCount)</button>
         <button role="tab" class="@(_tab == "remembered" ? "active" : "")" aria-selected="@(_tab == "remembered")" @onclick="ShowRememberedAsync">Remembered (@_rememberedCount)</button>
@@ -35,8 +35,9 @@
         else if (_deferred.Count == 0) { <div class="review-empty"><h3>Nothing is deferred</h3><p>Deferred reviews wait here until their snooze ends; the next import of that anime after that reopens them.</p></div> }
         else
         {
+            <ReviewPager Total="_deferred.Count" Page="_page" PageSize="_pageSize" PageChanged="GoToPage" PageSizeChanged="SetPageSize" Label="Deferred review pages" />
             <div class="review-list">
-                @foreach (var item in _deferred)
+                @foreach (var item in ReviewPager.Slice(_deferred, _page, _pageSize))
                 {
                     <div class="review-row">
                         <div><h3>@item.Incoming.Title</h3><p>@FormatDate(item.Incoming.StartDate) · @SourceLinks(item.Incoming.MALId, item.Incoming.AniListId)</p></div>
@@ -54,8 +55,9 @@
         else if (_remembered.Count == 0) { <div class="review-empty"><h3>Nothing remembered yet</h3><p>Merge or create a review and the answer is kept here.</p></div> }
         else
         {
+            <ReviewPager Total="_remembered.Count" Page="_page" PageSize="_pageSize" PageChanged="GoToPage" PageSizeChanged="SetPageSize" Label="Remembered decision pages" />
             <div class="review-list">
-                @foreach (var item in _remembered)
+                @foreach (var item in ReviewPager.Slice(_remembered, _page, _pageSize))
                 {
                     <div class="review-row">
                         <div><h3>@(item.SourceTitle ?? "Provider record") <span class="review-decision-inline review-decision-inline-@(item.Decision.IsSameAnime ? "same" : "different")">@(item.Decision.IsSameAnime ? "is" : "is not")</span> <a href="/anime/@item.Decision.AnimeId">@item.AnimeTitle</a></h3><p>@SourceLinks(item.Decision.SourceMalId, item.Decision.SourceAniListId) · from @item.Decision.Origin.ToLowerInvariant() · @item.Decision.DecidedAt.ToLocalTime().ToString("d MMM yyyy")</p></div>
@@ -72,8 +74,9 @@
         else if (_autoResolved.Count == 0) { <div class="review-empty"><h3>No automatic decisions yet</h3><p>Reviews resolved by provider IDs or decision bands are listed here, newest first, so you can undo them.</p></div> }
         else
         {
+            <ReviewPager Total="_autoResolved.Count" Page="_page" PageSize="_pageSize" PageChanged="GoToPage" PageSizeChanged="SetPageSize" Label="Automatic decision pages" />
             <div class="review-list">
-                @foreach (var item in _autoResolved)
+                @foreach (var item in ReviewPager.Slice(_autoResolved, _page, _pageSize))
                 {
                     <div class="review-card review-card-static">
                         <span class="review-decision review-decision-@item.Review.Status.ToLowerInvariant()">@(item.Review.Status == "Merged" ? "Merged" : "Created")</span>
@@ -90,10 +93,11 @@
     else if (_items.Count == 0) { <div class="review-empty"><h3>Nothing needs review</h3><p>Future uncertain title matches will appear here instead of changing catalogue records.</p></div> }
     else
     {
-        <div class="review-toolbar"><input class="review-select-all" type="checkbox" checked="@AllSelected" @onchange="ToggleAll" aria-label="Select all review records" /><strong>@_selected.Count selected</strong><span>Click to select · Shift-click selects a range · Ctrl/Cmd-click adds or removes records.</span><div class="review-toolbar-actions"><button @onclick='() => ResolveSelectedAsync("Create")' disabled="@(_selected.Count == 0 || _working)">Create as new</button><button @onclick='() => ResolveSelectedAsync("Merge")' disabled="@(!CanMergeSelection || _working)">Merge into shown match</button><button @onclick='() => ResolveSelectedAsync("Defer")' disabled="@(_selected.Count == 0 || _working)">Defer</button><button class="review-plain" @onclick="ClearSelection" disabled="@(_selected.Count == 0)">Clear</button></div></div>
+        <div class="review-toolbar"><input class="review-select-all" type="checkbox" checked="@AllSelected" @onchange="ToggleAll" aria-label="Select all review records on this page" /><strong>@_selected.Count selected</strong><span>Click to select · Shift-click selects a range · Ctrl/Cmd-click adds or removes records.</span><div class="review-toolbar-actions"><button @onclick='() => ResolveSelectedAsync("Create")' disabled="@(_selected.Count == 0 || _working)">Create as new</button><button @onclick='() => ResolveSelectedAsync("Merge")' disabled="@(!CanMergeSelection || _working)">Merge into shown match</button><button @onclick='() => ResolveSelectedAsync("Defer")' disabled="@(_selected.Count == 0 || _working)">Defer</button><button class="review-plain" @onclick="ClearSelection" disabled="@(_selected.Count == 0)">Clear</button></div></div>
         @if (!string.IsNullOrEmpty(_notice)) { <p class="review-notice">@_notice</p> }
+        <ReviewPager Total="_items.Count" Page="_page" PageSize="_pageSize" PageChanged="GoToPage" PageSizeChanged="SetPageSize" Label="Review queue pages" />
         <div class="review-list">
-            @foreach (var item in _items)
+            @foreach (var item in PageItems)
             {
                 var selected = _selected.Contains(item.Review.Id);
                 <div class="review-card @(selected ? "selected" : "")" @onclick="args => SelectItem(item.Review.Id, args)">
@@ -120,6 +124,7 @@
                 </div>
             }
         </div>
+        <ReviewPager Total="_items.Count" Page="_page" PageSize="_pageSize" PageChanged="GoToPage" PageSizeChanged="SetPageSize" Label="Review queue pages" />
     }
 </div>
 
@@ -146,12 +151,12 @@
     private int _rememberedCount;
     private async Task ShowDeferredAsync()
     {
-        _tab = "deferred";
+        _tab = "deferred"; _page = 1;
         _deferred = await ReviewService.GetDeferredAsync();
     }
     private async Task ShowRememberedAsync()
     {
-        _tab = "remembered";
+        _tab = "remembered"; _page = 1;
         _remembered = await ReviewService.GetRememberedDecisionsAsync();
     }
     private async Task ReopenAsync(int reviewId)
@@ -187,7 +192,7 @@
     }
     private async Task ShowAutoResolvedAsync()
     {
-        _tab = "auto";
+        _tab = "auto"; _page = 1;
         _autoResolved = await ReviewService.GetAutoResolvedAsync();
     }
     private async Task UndoAsync(int reviewId)
@@ -214,14 +219,22 @@
         await ReloadAsync();
     }
     private bool CanMergeSelection => _selected.Count > 0 && _items is not null && _items.Where(item => _selected.Contains(item.Review.Id)).All(item => item.Candidates.Count == 1);
-    private bool AllSelected => _items is { Count: > 0 } && _items.All(item => _selected.Contains(item.Review.Id));
+    private bool AllSelected => PageItems.Count > 0 && PageItems.All(item => _selected.Contains(item.Review.Id));
+    private int _page = 1;
+    private int _pageSize = ReviewPager.DefaultPageSize;
+    private List<PendingAnimeReviewItem> PageItems => _items is null ? [] : ReviewPager.Slice(_items, _page, _pageSize).ToList();
+    private int CurrentTabCount => _tab switch { "deferred" => _deferred?.Count ?? 0, "remembered" => _remembered?.Count ?? 0, "auto" => _autoResolved?.Count ?? 0, _ => _items?.Count ?? 0 };
+    // Selection is per page, so an action never touches records the person cannot see.
+    private void GoToPage(int page) { _page = ReviewPager.Clamp(page, CurrentTabCount, _pageSize); ClearSelection(); }
+    private void SetPageSize(int size) { _pageSize = size; _page = 1; ClearSelection(); }
     private void SelectItem(int id, MouseEventArgs args)
     {
         if (_items is null) return;
         if (args.ShiftKey && _anchorId is int anchor)
         {
-            var start = _items.FindIndex(item => item.Review.Id == anchor); var end = _items.FindIndex(item => item.Review.Id == id);
-            if (start >= 0 && end >= 0) { if (!args.CtrlKey && !args.MetaKey) _selected.Clear(); foreach (var item in _items.Skip(Math.Min(start, end)).Take(Math.Abs(end - start) + 1)) _selected.Add(item.Review.Id); return; }
+            var visible = PageItems;
+            var start = visible.FindIndex(item => item.Review.Id == anchor); var end = visible.FindIndex(item => item.Review.Id == id);
+            if (start >= 0 && end >= 0) { if (!args.CtrlKey && !args.MetaKey) _selected.Clear(); foreach (var item in visible.Skip(Math.Min(start, end)).Take(Math.Abs(end - start) + 1)) _selected.Add(item.Review.Id); return; }
         }
         if (args.CtrlKey || args.MetaKey) { if (!_selected.Add(id)) _selected.Remove(id); } else { _selected.Clear(); _selected.Add(id); }
         _anchorId = id;
@@ -232,7 +245,7 @@
         if (_items is null) return;
         var select = args.Value is bool value && value;
         _selected.Clear();
-        if (select) foreach (var item in _items) _selected.Add(item.Review.Id);
+        if (select) foreach (var item in PageItems) _selected.Add(item.Review.Id);
         _anchorId = null;
     }
     private void ToggleCheckbox(int id, MouseEventArgs args)
@@ -249,6 +262,7 @@
     private async Task ReloadAsync()
     {
         _items = await ReviewService.GetPendingAsync();
+        _page = ReviewPager.Clamp(_page, CurrentTabCount, _pageSize);
         _autoResolvedCount = await ReviewService.GetAutoResolvedCountAsync();
         _deferredCount = await ReviewService.GetDeferredCountAsync();
         _rememberedCount = await ReviewService.GetRememberedDecisionCountAsync();
