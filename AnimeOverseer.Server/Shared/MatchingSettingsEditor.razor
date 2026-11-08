@@ -141,6 +141,7 @@ else
                             <strong>@ExpandedTitle (@shown.Count)</strong>
                             <button type="button" class="matching-plain" @onclick="() => Toggle(_expanded)">Close</button>
                         </div>
+                        @if (!string.IsNullOrEmpty(_previewNotice)) { <p class="matching-note" role="status">@_previewNotice</p> }
                         @if (shown.Count == 0) { <p>No reviews here.</p> }
                         @foreach (var item in shown.Take(_shownCount))
                         {
@@ -169,6 +170,7 @@ else
     private int _shownCount = PreviewPageSize;
     private bool _working;
     private string? _notice;
+    private string? _previewNotice;
 
     private MatchingSettings Current => _form!.ToSettings().Normalized();
 
@@ -281,8 +283,26 @@ else
                 }
                 @if (suggestion is not null) { <span class="matching-preview-why">Because @suggestion.Explanation.</span> }
             </div>
+            <div class="matching-preview-actions">
+                <button type="button" @onclick='() => DecideAsync(item, "Create")' disabled="@_working">Create as new</button>
+                @if (shownCandidate is not null)
+                {
+                    <button type="button" @onclick='() => DecideAsync(item, "Merge", shownCandidate.Id)' disabled="@_working" title="Merge into @shownCandidate.Title">Merge into shown</button>
+                }
+                <button type="button" @onclick='() => DecideAsync(item, "Defer")' disabled="@_working">Defer</button>
+            </div>
         </div>
     };
+
+    private async Task DecideAsync(PendingAnimeReviewItem item, string decision, int? candidateId = null)
+    {
+        _working = true;
+        var done = await ReviewService.ResolveOneAsync(item.Review.Id, decision, candidateId);
+        _working = false;
+        // Either decided now or already gone from the queue: drop it from the preview either way.
+        _preview!.Remove(item);
+        _previewNotice = done ? $"{(decision == "Merge" ? "Merged" : decision == "Create" ? "Created" : "Deferred")} \"{item.Incoming.Title}\"." : $"\"{item.Incoming.Title}\" was no longer pending.";
+    }
 
     private static string EvidenceLabel(MatchEvidence evidence)
         => evidence.Kind == MatchEvidenceKind.HardNegative ? "✕" : evidence.Weight >= 0 ? $"+{evidence.Weight}" : evidence.Weight.ToString();
@@ -294,6 +314,7 @@ else
     {
         _working = true;
         _preview = null;
+        _previewNotice = null;
         _preview = await ReviewService.PreviewAsync(Current);
         _working = false;
     }

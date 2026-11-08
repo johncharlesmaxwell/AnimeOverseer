@@ -2712,4 +2712,6 @@ img {
 .matching-preview-side .review-muted { font-size:.78rem; }
 .matching-preview-evidence { grid-column:1 / -1; display:flex; flex-wrap:wrap; align-items:center; gap:.35rem; }
 .matching-preview-why { font-size:.78rem; color:#c9b8ff; }
+.matching-preview-actions { grid-column:1 / -1; display:flex; flex-wrap:wrap; justify-content:flex-end; gap:.4rem; }
+.matching-preview-actions button { padding:.25rem .65rem; font-size:.8rem; }
 @media (max-width: 600px) { .matching-preview-row { grid-template-columns:1fr; } .matching-preview-row .review-arrow { display:none; } }

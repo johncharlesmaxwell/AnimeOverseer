@@ -175,6 +175,10 @@ public sealed class AnimeReviewService(AnimeDbContext db, AnimeCacheService cach
         return resolved;
     }
 
+    /// <summary>Decides one review; <paramref name="candidateId"/> picks the merge target among its candidates.</summary>
+    public Task<bool> ResolveOneAsync(int reviewId, string decision, int? candidateId = null)
+        => cache.ResolvePendingReviewAsync(reviewId, decision, decision == "Merge" ? candidateId : null);
+
     public async Task<bool> SetMainEnglishTitleAsync(int animeId, string title, bool allowCustom = false)
     {
         var anime = await db.Animes.Include(item => item.TitleAliases).FirstOrDefaultAsync(item => item.Id == animeId);
@@ -276,9 +280,21 @@ public sealed class MatchingPreview(List<PendingAnimeReviewItem> items, MatchSco
     public List<PendingAnimeReviewItem> WouldMerge { get; } = items.Where(item => item.Suggestion?.Decision == "Merge").ToList();
     public List<PendingAnimeReviewItem> WouldCreate { get; } = items.Where(item => item.Suggestion?.Decision == "Create").ToList();
     public List<PendingAnimeReviewItem> NeedPerson { get; } = items.Where(item => item.Suggestion is null).ToList();
-    public int Overruled { get; } = items.Count(item => item.Review.AutoDecisionUndone);
+    public int Overruled { get; private set; } = items.Count(item => item.Review.AutoDecisionUndone);
     public Dictionary<string, List<PendingAnimeReviewItem>> ByConfidence { get; }
         = items.GroupBy(item => Confidence(item, scoring)).ToDictionary(group => group.Key, group => group.ToList());
+
+    /// <summary>Drops an item that has just been decided, so the counts and lists stay current without re-scoring the queue.</summary>
+    public void Remove(PendingAnimeReviewItem item)
+    {
+        if (!Items.Remove(item)) return;
+        WouldMerge.Remove(item);
+        WouldCreate.Remove(item);
+        NeedPerson.Remove(item);
+        if (item.Review.AutoDecisionUndone) Overruled--;
+        var band = Confidence(item, Scoring);
+        if (ByConfidence.TryGetValue(band, out var group) && group.Remove(item) && group.Count == 0) ByConfidence.Remove(band);
+    }
 
     /// <summary>The confidence level of an item's best candidate, or <see cref="None"/> when it has none.</summary>
     public string ConfidenceOf(PendingAnimeReviewItem item) => Confidence(item, Scoring);
