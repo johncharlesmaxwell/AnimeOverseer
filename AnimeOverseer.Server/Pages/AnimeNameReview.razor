@@ -1,6 +1,9 @@
 @using AnimeOverseer.Server.Services
 @inject AnimeReviewService ReviewService
 @inject SettingsService SettingsService
+@inject NavigationManager Nav
+@implements IDisposable
+@using Microsoft.AspNetCore.Components.Routing
 
 <div class="name-review-page">
     <div class="review-heading"><div><h2>Review names</h2><p>Choose the primary English name for each catalogue entry. A name disappears from this list after it is selected.</p></div></div>
@@ -67,6 +70,8 @@
     {
         _pageSize = ReviewPagingSettings.Read(await SettingsService.GetAsync(ReviewPagingSettings.NamesKey));
         await ReloadAsync();
+        ApplyLocation();
+        Nav.LocationChanged += OnLocationChanged;
     }
     private int _page = 1;
     private int _pageSize = ReviewPagingSettings.DefaultPageSize;
@@ -75,8 +80,14 @@
         _items = await ReviewService.GetNamesPendingReviewAsync();
         _page = ReviewPager.Clamp(_page, _items.Count, _pageSize);
     }
-    private void GoToPage(int page) => _page = ReviewPager.Clamp(page, _items?.Count ?? 0, _pageSize);
-    private async Task SetPageSize(int size) { _pageSize = size; _page = 1; await SettingsService.SetAsync(ReviewPagingSettings.NamesKey, size.ToString()); }
+    // The page lives in the query string (?page=2) so browser back/forward walks through pages.
+    // Read from NavigationManager rather than [SupplyParameterFromQuery]; see AnimeReview for why.
+    private void ApplyLocation() => _page = ReviewPager.Clamp(ReviewPager.QueryPage(Nav), _items?.Count ?? 0, _pageSize);
+    private void OnLocationChanged(object? sender, LocationChangedEventArgs args) => _ = InvokeAsync(() => { ApplyLocation(); StateHasChanged(); });
+    public void Dispose() => Nav.LocationChanged -= OnLocationChanged;
+    private void NavigateToPage(int page, bool replace = false) => Nav.NavigateTo(Nav.GetUriWithQueryParameter("page", page <= 1 ? (int?)null : page), replace: replace);
+    private void GoToPage(int page) => NavigateToPage(ReviewPager.Clamp(page, _items?.Count ?? 0, _pageSize));
+    private async Task SetPageSize(int size) { _pageSize = size; _page = 1; await SettingsService.SetAsync(ReviewPagingSettings.NamesKey, size.ToString()); NavigateToPage(1, replace: true); }
     private async Task SelectNameAsync(int animeId, string name) { await ReviewService.SetMainEnglishTitleAsync(animeId, name); await ReloadAsync(); }
     private static string NameOf(AnimeOverseer.Server.Models.Anime anime) => string.IsNullOrWhiteSpace(anime.Title) ? anime.OriginalTitle ?? "record" : anime.Title;
     private async Task ConfirmCurrentAsync(int animeId) { await ReviewService.ConfirmCurrentTitleAsync(animeId); await ReloadAsync(); }

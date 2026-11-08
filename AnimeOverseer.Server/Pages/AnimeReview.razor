@@ -3,9 +3,12 @@
 @using AnimeOverseer.Server.Services
 @using AnimeOverseer.Server.Models
 @using Microsoft.AspNetCore.Components.Web
+@using Microsoft.AspNetCore.Components.Routing
 @inject AnimeReviewService ReviewService
 @inject SyncJobService SyncJobService
 @inject SettingsService SettingsService
+@inject NavigationManager Nav
+@implements IDisposable
 
 <PageTitle>Review catalogue matches - AnimeOverseer</PageTitle>
 
@@ -13,10 +16,10 @@
     <div class="review-heading"><div><h1>Review catalogue matches</h1><p>Only title or alias matches are held here. Provider-ID matches continue automatically. Sorted by match score, most confident first.</p></div><div class="review-heading-actions"><button class="review-check-ids" @onclick="QueueProviderIdCheckAsync" disabled="@_queueingCheck" title="Fill missing AniList/MAL IDs from AniList, then resolve reviews whose IDs now match or rule out every candidate">Check provider IDs</button><a href="/settings" class="review-back">← Settings</a></div></div>
     <p class="review-automation-summary">Automatic decisions: <strong>@ModeLabel(_settings?.Mode)</strong>@if (_settings is { Mode: not AutoDecisionMode.Off }) { <span> · merge threshold @_settings.MergeThreshold</span> } · <a href="/settings?tab=matching">Change in Matching settings</a></p>
     <div class="review-tabs" role="tablist">
-        <button role="tab" class="@(_tab == "pending" ? "active" : "")" aria-selected="@(_tab == "pending")" @onclick='() => { _tab = "pending"; _page = 1; }'>Needs review (@(_items?.Count ?? 0))</button>
-        <button role="tab" class="@(_tab == "auto" ? "active" : "")" aria-selected="@(_tab == "auto")" @onclick="ShowAutoResolvedAsync">Auto-resolved (@_autoResolvedCount)</button>
-        <button role="tab" class="@(_tab == "deferred" ? "active" : "")" aria-selected="@(_tab == "deferred")" @onclick="ShowDeferredAsync">Deferred (@_deferredCount)</button>
-        <button role="tab" class="@(_tab == "remembered" ? "active" : "")" aria-selected="@(_tab == "remembered")" @onclick="ShowRememberedAsync">Remembered (@_rememberedCount)</button>
+        <button role="tab" class="@(_tab == "pending" ? "active" : "")" aria-selected="@(_tab == "pending")" @onclick='() => ShowView("pending")'>Needs review (@(_items?.Count ?? 0))</button>
+        <button role="tab" class="@(_tab == "auto" ? "active" : "")" aria-selected="@(_tab == "auto")" @onclick='() => ShowView("auto")'>Auto-resolved (@_autoResolvedCount)</button>
+        <button role="tab" class="@(_tab == "deferred" ? "active" : "")" aria-selected="@(_tab == "deferred")" @onclick='() => ShowView("deferred")'>Deferred (@_deferredCount)</button>
+        <button role="tab" class="@(_tab == "remembered" ? "active" : "")" aria-selected="@(_tab == "remembered")" @onclick='() => ShowView("remembered")'>Remembered (@_rememberedCount)</button>
     </div>
     @if (_checkJobId is int checkJobId) { <p class="review-notice">Provider ID check queued — <a href="/jobs/@checkJobId">follow job #@checkJobId</a>. Reload this page when it finishes.</p> } else if (!string.IsNullOrEmpty(_checkNotice)) { <p class="review-notice">@_checkNotice</p> }
     @if (_tab == "deferred")
@@ -136,16 +139,32 @@
     private int _deferredCount;
     private List<RememberedDecisionItem>? _remembered;
     private int _rememberedCount;
-    private async Task ShowDeferredAsync()
+    // The view and page live in the query string (?view=deferred&page=2) so browser back/forward walks through them.
+    // Read from NavigationManager rather than [SupplyParameterFromQuery]: this component is nested in /settings, and
+    // nested query subscribers can crash Blazor's location-change dispatch when the parent re-renders mid-notification.
+    private static readonly string[] Views = ["pending", "auto", "deferred", "remembered"];
+    private async Task ApplyLocationAsync()
     {
-        _tab = "deferred"; _page = 1;
-        _deferred = await ReviewService.GetDeferredAsync();
+        var requested = ReviewPager.QueryValue(Nav, "view")?.ToLowerInvariant();
+        var view = requested is not null && Views.Contains(requested) ? requested : "pending";
+        if (view != _tab) { _tab = view; await LoadViewAsync(view); }
+        var page = ReviewPager.Clamp(ReviewPager.QueryPage(Nav), CurrentTabCount, _pageSize);
+        if (page != _page) ClearSelection();
+        _page = page;
     }
-    private async Task ShowRememberedAsync()
+    private void OnLocationChanged(object? sender, LocationChangedEventArgs args) => _ = InvokeAsync(async () => { await ApplyLocationAsync(); StateHasChanged(); });
+    public void Dispose() => Nav.LocationChanged -= OnLocationChanged;
+    private async Task LoadViewAsync(string view)
     {
-        _tab = "remembered"; _page = 1;
-        _remembered = await ReviewService.GetRememberedDecisionsAsync();
+        switch (view)
+        {
+            case "deferred": _deferred = await ReviewService.GetDeferredAsync(); break;
+            case "remembered": _remembered = await ReviewService.GetRememberedDecisionsAsync(); break;
+            case "auto": _autoResolved = await ReviewService.GetAutoResolvedAsync(); break;
+        }
     }
+    private void ShowView(string view) => Nav.NavigateTo(Nav.GetUriWithQueryParameters(new Dictionary<string, object?> { ["view"] = view == "pending" ? null : view, ["page"] = null }));
+    private void NavigateToPage(int page, bool replace = false) => Nav.NavigateTo(Nav.GetUriWithQueryParameter("page", page <= 1 ? (int?)null : page), replace: replace);
     private async Task ReopenAsync(int reviewId)
     {
         _working = true;
@@ -166,11 +185,6 @@
     {
         _settings = await ReviewService.GetMatchingSettingsAsync();
         _pageSize = ReviewPagingSettings.Read(await SettingsService.GetAsync(ReviewPagingSettings.MatchesKey));
-    }
-    private async Task ShowAutoResolvedAsync()
-    {
-        _tab = "auto"; _page = 1;
-        _autoResolved = await ReviewService.GetAutoResolvedAsync();
     }
     private async Task UndoAsync(int reviewId)
     {
@@ -194,6 +208,8 @@
     {
         await LoadSettingsAsync();
         await ReloadAsync();
+        await ApplyLocationAsync();
+        Nav.LocationChanged += OnLocationChanged;
     }
     private bool CanMergeSelection => _selected.Count > 0 && _items is not null && _items.Where(item => _selected.Contains(item.Review.Id)).All(item => item.Candidates.Count == 1);
     private bool AllSelected => PageItems.Count > 0 && PageItems.All(item => _selected.Contains(item.Review.Id));
@@ -202,8 +218,8 @@
     private List<PendingAnimeReviewItem> PageItems => _items is null ? [] : ReviewPager.Slice(_items, _page, _pageSize).ToList();
     private int CurrentTabCount => _tab switch { "deferred" => _deferred?.Count ?? 0, "remembered" => _remembered?.Count ?? 0, "auto" => _autoResolved?.Count ?? 0, _ => _items?.Count ?? 0 };
     // Selection is per page, so an action never touches records the person cannot see.
-    private void GoToPage(int page) { _page = ReviewPager.Clamp(page, CurrentTabCount, _pageSize); ClearSelection(); }
-    private async Task SetPageSize(int size) { _pageSize = size; _page = 1; ClearSelection(); await SettingsService.SetAsync(ReviewPagingSettings.MatchesKey, size.ToString()); }
+    private void GoToPage(int page) => NavigateToPage(ReviewPager.Clamp(page, CurrentTabCount, _pageSize));
+    private async Task SetPageSize(int size) { _pageSize = size; _page = 1; ClearSelection(); await SettingsService.SetAsync(ReviewPagingSettings.MatchesKey, size.ToString()); NavigateToPage(1, replace: true); }
     private void SelectItem(int id, MouseEventArgs args)
     {
         if (_items is null) return;
