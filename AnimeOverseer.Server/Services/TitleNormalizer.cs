@@ -106,8 +106,13 @@ public static class TitleNormalizer
     /// <summary>Jaccard similarity of two token sets.</summary>
     public static double TokenScore(HashSet<string> left, HashSet<string> right)
     {
-        var union = left.Union(right).Count();
-        return union == 0 ? 0 : (double)left.Intersect(right).Count() / union;
+        // Counted without building the union and intersection; this runs per candidate pair.
+        var (small, large) = left.Count <= right.Count ? (left, right) : (right, left);
+        var shared = 0;
+        foreach (var token in small)
+            if (large.Contains(token)) shared++;
+        var union = left.Count + right.Count - shared;
+        return union == 0 ? 0 : (double)shared / union;
     }
 
     /// <summary>

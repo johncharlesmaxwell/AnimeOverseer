@@ -99,6 +99,27 @@ public sealed class ImportIntegrationTests : SqliteIntegrationTestBase
     }
 
     [Fact]
+    public async Task Fuzzy_title_match_is_a_candidate_even_when_another_row_matches_exactly()
+    {
+        await using var db = CreateDb();
+        var season = await AddSeasonAsync(db);
+        // The exact alias match is the season-one row; the right row only matches by tokens.
+        var exact = new Anime { Title = "Orbit Chronicle", SeasonId = season.Id };
+        var fuzzy = new Anime { Title = "The Orbit Chronicle Saga II", SeasonId = season.Id };
+        db.Animes.AddRange(exact, fuzzy);
+        await db.SaveChangesAsync();
+        var incoming = Incoming(83, "Orbit Chronicle Saga Season 2", false, aliases: ["Orbit Chronicle"]);
+
+        await CreateCache(db).FetchAndCacheSeasonsFromAsync(2026, ["fall"], (_, _, _) => Task.FromResult(new List<Anime> { incoming }));
+
+        var review = await db.PendingAnimeReviews.SingleAsync();
+        var candidates = System.Text.Json.JsonSerializer.Deserialize<List<int>>(review.CandidateAnimeIdsJson)!;
+        Assert.Contains(exact.Id, candidates);
+        Assert.Contains(fuzzy.Id, candidates);
+        Assert.Equal(2, await db.Animes.CountAsync());
+    }
+
+    [Fact]
     public async Task Title_match_with_a_conflicting_mal_id_is_not_staged_for_review()
     {
         await using var db = CreateDb();

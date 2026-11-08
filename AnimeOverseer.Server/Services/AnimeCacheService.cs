@@ -487,12 +487,12 @@ public class AnimeCacheService(AnimeDbContext db, AniListApiService aniList, Jik
         var existing = new Dictionary<string, Anime>();
         var queuedReviews = new List<PendingAnimeReview>();
         List<AnimeMatchDecision>? decisions = null;
-        var existingByName = new Dictionary<string, HashSet<Anime>>(StringComparer.Ordinal);
+        var names = new CatalogueNameIndex();
         foreach (var row in existingRows)
         {
             if (row.AniListId is > 0) existing[$"a:{row.AniListId}"] = row;
             if (row.MALId is > 0) existing[$"m:{row.MALId}"] = row;
-            AddNameCandidates(existingByName, row);
+            names.Add(row);
         }
         foreach (var source in sources)
         {
@@ -504,7 +504,7 @@ public class AnimeCacheService(AnimeDbContext db, AniListApiService aniList, Jik
                 var rememberedSame = decisions.FirstOrDefault(decision => decision.IsSameAnime && decision.AppliesTo(source.AniListId, source.MALId));
                 var candidates = rememberedSame is not null && existingRows.FirstOrDefault(row => row.Id == rememberedSame.AnimeId) is { } same
                     ? [same]
-                    : WithoutRejected(decisions, source, FindNameCandidates(existingByName, existingRows, source));
+                    : WithoutRejected(decisions, source, names.FindCandidates(source));
                 if (rememberedSame is not null && candidates.Count == 1 && candidates[0].Id == rememberedSame.AnimeId)
                     target = candidates[0];
                 else if (candidates.Count > 0)
@@ -538,7 +538,7 @@ public class AnimeCacheService(AnimeDbContext db, AniListApiService aniList, Jik
             await StoreTitleAliasesAsync(target, source, ct);
             if (source.AniListId is > 0) existing[$"a:{source.AniListId}"] = target;
             if (source.MALId is > 0) existing[$"m:{source.MALId}"] = target;
-            AddNameCandidates(existingByName, source, target);
+            names.Add(source, target);
             // Recommendation and relation lookups enrich many existing titles.
             // They must not move a title into the source title's season.
             if (fixedSeasonId is > 0 && !preserveExistingSeason) target.SeasonId = fixedSeasonId.Value;
@@ -582,27 +582,6 @@ public class AnimeCacheService(AnimeDbContext db, AniListApiService aniList, Jik
     }
 
     private static string Key(Anime anime) => anime.AniListId is > 0 ? $"a:{anime.AniListId}" : $"m:{anime.MALId}";
-
-    private static List<Anime> FindNameCandidates(Dictionary<string, HashSet<Anime>> index, IReadOnlyCollection<Anime> existingRows, Anime source)
-    {
-        var candidates = Names(source)
-            .Where(index.ContainsKey)
-            .SelectMany(name => index[name])
-            .Where(candidate => !HasConflictingMalId(source, candidate))
-            .Distinct()
-            .ToList();
-        if (candidates.Count > 0) return candidates;
-
-        // Providers often vary only by articles and season notation, e.g.
-        // "The Saga of Tanya the Evil II" vs "Saga of Tanya the Evil Season 2".
-        // A match must be unambiguous and use at least two meaningful tokens.
-        var ranked = existingRows
-            .Select(row => new { Anime = row, Score = BestAliasScore(source, row) })
-            .Where(x => x.Score >= 0.9 && !HasConflictingMalId(source, x.Anime))
-            .OrderByDescending(x => x.Score)
-            .ToList();
-        return ranked.Select(x => x.Anime).ToList();
-    }
 
     private async Task<PendingAnimeReview?> QueueForReviewAsync(Anime source, int? fixedSeasonId, IReadOnlyCollection<Anime> candidates, CancellationToken ct)
     {
@@ -904,14 +883,79 @@ public class AnimeCacheService(AnimeDbContext db, AniListApiService aniList, Jik
         AnimeDemographics = source.Demographics.Select(name => new AnimeDemographic { Demographic = new Demographic { Name = name } }).ToList()
     };
 
-    private static void AddNameCandidates(Dictionary<string, HashSet<Anime>> index, Anime source, Anime? target = null)
+    /// <summary>
+    /// Exact and fuzzy title lookup over the catalogue for one import batch. Each row's
+    /// names are normalized and tokenized once when added, not once per incoming title.
+    /// </summary>
+    private sealed class CatalogueNameIndex
     {
-        var resolved = target ?? source;
-        foreach (var name in Names(source))
+        // Providers often vary only by articles and season notation, e.g.
+        // "The Saga of Tanya the Evil II" vs "Saga of Tanya the Evil Season 2".
+        // A fuzzy match needs at least two meaningful tokens and this token overlap.
+        private const double FuzzyThreshold = 0.9;
+
+        private readonly Dictionary<string, HashSet<Anime>> _byName = new(StringComparer.Ordinal);
+        private readonly Dictionary<string, HashSet<Anime>> _byToken = new(StringComparer.Ordinal);
+        private readonly Dictionary<Anime, List<HashSet<string>>> _tokenSets = new(ReferenceEqualityComparer.Instance);
+
+        /// <summary>Indexes the source's names under the row they resolved to (the source itself by default).</summary>
+        public void Add(Anime source, Anime? target = null)
         {
-            if (!index.TryGetValue(name, out var matches)) index[name] = matches = [];
-            matches.Add(resolved);
+            var resolved = target ?? source;
+            foreach (var name in Names(source))
+            {
+                if (!_byName.TryGetValue(name, out var matches)) _byName[name] = matches = [];
+                matches.Add(resolved);
+            }
+            if (!_tokenSets.TryGetValue(resolved, out var sets)) _tokenSets[resolved] = sets = [];
+            foreach (var tokens in TokenSets(source))
+            {
+                if (sets.Any(known => known.SetEquals(tokens))) continue;
+                sets.Add(tokens);
+                foreach (var token in tokens)
+                {
+                    if (!_byToken.TryGetValue(token, out var rows)) _byToken[token] = rows = [];
+                    rows.Add(resolved);
+                }
+            }
         }
+
+        /// <summary>
+        /// Rows sharing an exact name with the source, then rows whose names are a close
+        /// token match. Both always run, so a wrong exact match cannot hide the right row.
+        /// </summary>
+        public List<Anime> FindCandidates(Anime source)
+        {
+            var exact = Names(source).Where(_byName.ContainsKey).SelectMany(name => _byName[name]);
+            var sourceSets = TokenSets(source).ToList();
+            var fuzzy = sourceSets.SelectMany(PossibleMatches).Distinct()
+                .Select(row => (Row: row, Score: BestScore(sourceSets, _tokenSets[row])))
+                .Where(match => match.Score >= FuzzyThreshold)
+                .OrderByDescending(match => match.Score)
+                .Select(match => match.Row);
+            return exact.Concat(fuzzy).Where(candidate => !HasConflictingMalId(source, candidate)).Distinct().ToList();
+        }
+
+        // Prefix filter: a row reaching the threshold shares at least minShared of the
+        // source's n tokens, so it holds one of any (n - minShared + 1) of them. Checking
+        // only the rarest ones keeps common words such as "season" from scanning everything.
+        private IEnumerable<Anime> PossibleMatches(HashSet<string> sourceTokens)
+        {
+            var minShared = (int)Math.Ceiling(FuzzyThreshold * sourceTokens.Count - 1e-9);
+            return sourceTokens
+                .Select(token => _byToken.TryGetValue(token, out var rows) ? rows : [])
+                .OrderBy(rows => rows.Count)
+                .Take(sourceTokens.Count - minShared + 1)
+                .SelectMany(rows => rows);
+        }
+
+        private static double BestScore(List<HashSet<string>> left, List<HashSet<string>> right)
+            => left.SelectMany(l => right.Select(r => TitleNormalizer.TokenScore(l, r))).DefaultIfEmpty(0).Max();
+
+        // Tokenize the original titles rather than Names(), which removes word
+        // boundaries for exact comparisons and would collapse tokens before scoring.
+        private static IEnumerable<HashSet<string>> TokenSets(Anime anime)
+            => RawNames(anime).Select(TitleNormalizer.Tokens).Where(tokens => tokens.Count >= 2);
     }
 
     // Each name is indexed exactly, with romaji long vowels folded ("~"), and with season
@@ -927,15 +971,6 @@ public class AnimeCacheService(AnimeDbContext db, AniListApiService aniList, Jik
                 "#" + TitleNormalizer.SeasonCanonical(title).Replace(" ", string.Empty, StringComparison.Ordinal)
             })
             .Distinct();
-
-    private static double BestAliasScore(Anime source, Anime existing)
-    {
-        // Tokenize the original titles rather than Names(), which removes word
-        // boundaries for exact comparisons and would collapse tokens before scoring.
-        var sourceNames = RawNames(source).Select(TitleNormalizer.Tokens).Where(tokens => tokens.Count >= 2).ToList();
-        var existingNames = RawNames(existing).Select(TitleNormalizer.Tokens).Where(tokens => tokens.Count >= 2).ToList();
-        return sourceNames.SelectMany(left => existingNames.Select(right => TitleNormalizer.TokenScore(left, right))).DefaultIfEmpty(0).Max();
-    }
 
     private static IEnumerable<string> RawNames(Anime anime)
         => new[] { anime.Title, anime.OriginalTitle }.Concat(anime.AlternativeTitles).Concat(anime.TitleAliases.Select(alias => alias.Title))
