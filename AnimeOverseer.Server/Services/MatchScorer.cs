@@ -18,12 +18,16 @@ public static class MatchScorer
     /// How many catalogue rows use a compact name (from <see cref="TitleNormalizer.Compact"/>),
     /// so a franchise name shared by many entries counts for less. Null treats every name as unique.
     /// </param>
-    public static CandidateMatch Score(Anime source, Anime candidate, MatchScoring? scoring = null, Func<string, int>? nameUsage = null)
+    /// <param name="tokenWeight">
+    /// How much each title word counts in fuzzy title similarity (see <see cref="CatalogueNameStats.TokenWeight"/>),
+    /// so rare words outweigh common ones. Null counts every word equally.
+    /// </param>
+    public static CandidateMatch Score(Anime source, Anime candidate, MatchScoring? scoring = null, Func<string, int>? nameUsage = null, Func<string, double>? tokenWeight = null)
     {
         var weights = scoring ?? MatchScoring.Default;
         var evidence = new List<MatchEvidence>();
         AddIdEvidence(source, candidate, evidence);
-        AddTitleEvidence(source, candidate, weights, nameUsage, evidence);
+        AddTitleEvidence(source, candidate, weights, nameUsage, tokenWeight, evidence);
         AddStartDateEvidence(source.StartDate, candidate.StartDate, weights, evidence);
         AddTypeEvidence(source.Type, candidate.Type, weights, evidence);
         AddEpisodeEvidence(source, candidate, weights, evidence);
@@ -69,7 +73,7 @@ public static class MatchScorer
         return null;
     }
 
-    private static bool HasHardNegative(CandidateMatch match) => match.Evidence.Any(item => item.Kind == MatchEvidenceKind.HardNegative);
+    public static bool HasHardNegative(CandidateMatch match) => match.Evidence.Any(item => item.Kind == MatchEvidenceKind.HardNegative);
 
     private static void AddIdEvidence(Anime source, Anime candidate, List<MatchEvidence> evidence)
     {
@@ -95,7 +99,11 @@ public static class MatchScorer
             (relation.AniListId is > 0 && relation.AniListId == candidate.AniListId) ||
             (relation.MalId is > 0 && relation.MalId == candidate.MALId));
 
-    private static void AddTitleEvidence(Anime source, Anime candidate, MatchScoring weights, Func<string, int>? nameUsage, List<MatchEvidence> evidence)
+    /// <summary>Scores a candidate with catalogue name and word frequencies.</summary>
+    public static CandidateMatch Score(Anime source, Anime candidate, MatchScoring? scoring, CatalogueNameStats stats)
+        => Score(source, candidate, scoring, stats.Usage, stats.TokenWeight);
+
+    private static void AddTitleEvidence(Anime source, Anime candidate, MatchScoring weights, Func<string, int>? nameUsage, Func<string, double>? tokenWeight, List<MatchEvidence> evidence)
     {
         var sourceMain = TitleNormalizer.Compact(source.Title);
         var sourceOriginal = TitleNormalizer.Compact(source.OriginalTitle);
@@ -114,12 +122,18 @@ public static class MatchScorer
             evidence.Add(romaji);
         else
         {
-            var similarity = AllNames(source).Select(TitleNormalizer.Tokens).Where(tokens => tokens.Count >= 2)
-                .SelectMany(left => AllNames(candidate).Select(TitleNormalizer.Tokens).Where(tokens => tokens.Count >= 2)
-                    .Select(right => TitleNormalizer.TokenScore(left, right)))
+            // One-word titles count too: "Toradora!" against "Toradora! SOS" is half similar,
+            // where requiring two words left it with nothing.
+            var fold = weights.MatchRomajiSpellings;
+            var weigh = weights.WeightRareWords ? tokenWeight : null;
+            var candidateSets = AllNames(candidate).Select(name => TitleNormalizer.ComparisonTokens(name, fold)).Where(tokens => tokens.Count > 0).ToList();
+            var similarity = AllNames(source).Select(name => TitleNormalizer.ComparisonTokens(name, fold)).Where(tokens => tokens.Count > 0)
+                .SelectMany(left => candidateSets.Select(right => weigh is null
+                    ? TitleNormalizer.TokenScore(left, right)
+                    : TitleNormalizer.WeightedTokenScore(left, right, weigh)))
                 .DefaultIfEmpty(0).Max();
             evidence.Add(similarity > 0
-                ? Positive("Title", $"Titles are {similarity:P0} similar", (int)Math.Round(weights.SimilarTitleMax * similarity))
+                ? Positive("Title", $"Titles are {similarity:P0} similar{(weigh is null ? "" : " (rare words count for more)")}", (int)Math.Round(weights.SimilarTitleMax * similarity))
                 : Negative("Title", "No shared title words", 0));
         }
 

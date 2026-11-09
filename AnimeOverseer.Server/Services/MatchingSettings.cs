@@ -143,6 +143,8 @@ public sealed record MatchScoring
     public bool ScaleSharedAliases { get; init; } = true;
     /// <summary>Treat "Yuuki", "Yūki" and "Yuki" as the same title when no exact title matches.</summary>
     public bool MatchRomajiSpellings { get; init; } = true;
+    /// <summary>In similar-title scoring, words used by few catalogue entries count for more than common ones.</summary>
+    public bool WeightRareWords { get; init; } = true;
 
     // Start date.
     public int StartWithinMonth { get; init; } = 25;

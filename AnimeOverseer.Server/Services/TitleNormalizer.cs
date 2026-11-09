@@ -116,6 +116,32 @@ public static class TitleNormalizer
     }
 
     /// <summary>
+    /// Jaccard similarity where each token counts its <paramref name="weight"/> instead of 1,
+    /// so sharing a rare word says more than sharing a common one such as "no" or "s2".
+    /// </summary>
+    public static double WeightedTokenScore(HashSet<string> left, HashSet<string> right, Func<string, double> weight)
+    {
+        var (small, large) = left.Count <= right.Count ? (left, right) : (right, left);
+        double shared = 0, total = 0;
+        foreach (var token in left) total += weight(token);
+        foreach (var token in right) total += weight(token);
+        foreach (var token in small)
+            if (large.Contains(token)) shared += weight(token);
+        var union = total - shared;
+        return union <= 0 ? 0 : shared / union;
+    }
+
+    /// <summary>
+    /// <see cref="Tokens"/> for scoring, optionally with romaji long vowels folded in each word
+    /// ("haikyuu" and "haikyu" agree). Folded tokens carry a "~" prefix so the two forms never mix,
+    /// which also keeps their catalogue frequencies apart.
+    /// </summary>
+    public static HashSet<string> ComparisonTokens(string? title, bool foldRomaji)
+        => foldRomaji
+            ? Tokens(title).Select(token => "~" + LongVowels.Replace(token, match => match.Value[..1])).ToHashSet(StringComparer.Ordinal)
+            : Tokens(title);
+
+    /// <summary>
     /// The season a title names, or 1 when it names none. See <see cref="InstallmentOf(string?)"/>;
     /// a final season with no number is reported as 0.
     /// </summary>

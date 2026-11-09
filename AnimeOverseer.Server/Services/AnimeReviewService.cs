@@ -48,13 +48,13 @@ public sealed class AnimeReviewService(AnimeDbContext db, AnimeCacheService cach
         var ids = reviews.SelectMany(review => JsonSerializer.Deserialize<List<int>>(review.CandidateAnimeIdsJson) ?? []).Distinct().ToList();
         var anime = await db.Animes.Include(item => item.Season).Include(item => item.TitleAliases).Where(item => ids.Contains(item.Id)).ToDictionaryAsync(item => item.Id);
         var settings = preview?.Normalized() ?? await MatchingSettings.LoadAsync(db);
-        var nameUsage = await CatalogueNameUsage.LoadAsync(db);
+        var nameStats = await CatalogueNameUsage.LoadAsync(db);
         return reviews.Select(review =>
         {
             var incoming = JsonSerializer.Deserialize<AnimeImportSnapshot>(review.PayloadJson) ?? new();
             var candidates = (JsonSerializer.Deserialize<List<int>>(review.CandidateAnimeIdsJson) ?? [])
                 .Where(anime.ContainsKey).Select(id => anime[id]).ToList();
-            var matches = MatchesFor(incoming, candidates, settings.Scoring, nameUsage);
+            var matches = MatchesFor(incoming, candidates, settings.Scoring, nameStats);
             return new PendingAnimeReviewItem
             {
                 Review = review,
@@ -75,10 +75,10 @@ public sealed class AnimeReviewService(AnimeDbContext db, AnimeCacheService cach
 
     // Scored for display without changing the stored review, so the page reflects
     // the current weights. Stored evidence is refreshed by imports and rechecks.
-    private static Dictionary<int, CandidateMatch> MatchesFor(AnimeImportSnapshot incoming, List<Anime> candidates, MatchScoring scoring, Func<string, int> nameUsage)
+    private static Dictionary<int, CandidateMatch> MatchesFor(AnimeImportSnapshot incoming, List<Anime> candidates, MatchScoring scoring, CatalogueNameStats nameStats)
     {
         var source = AnimeCacheService.FromSnapshot(incoming);
-        return candidates.ToDictionary(candidate => candidate.Id, candidate => MatchScorer.Score(source, candidate, scoring, nameUsage));
+        return candidates.ToDictionary(candidate => candidate.Id, candidate => MatchScorer.Score(source, candidate, scoring, nameStats));
     }
 
     /// <summary>How the pending queue would be decided under <paramref name="settings"/>.</summary>
@@ -87,6 +87,58 @@ public sealed class AnimeReviewService(AnimeDbContext db, AnimeCacheService cach
         var normalized = settings.Normalized();
         var items = await GetPendingAsync(normalized);
         return new MatchingPreview(items, normalized.Scoring);
+    }
+
+    /// <summary>
+    /// Replays every review a person merged or created under <paramref name="settings"/>, to show
+    /// how often the automatic rules would have agreed. Merge targets are rebuilt from their
+    /// pre-merge copy; other candidates are scored as they are now.
+    /// </summary>
+    public async Task<MatchReplayReport> ReplayDecisionsAsync(MatchingSettings settings)
+    {
+        var normalized = settings.Normalized();
+        var reviews = await db.PendingAnimeReviews.AsNoTracking()
+            .Where(review => !review.AutoResolved && (review.Status == "Merged" || review.Status == "Created"))
+            .OrderByDescending(review => review.ResolvedAt)
+            .ToListAsync();
+        var candidateIds = reviews.ToDictionary(review => review.Id, review => JsonSerializer.Deserialize<List<int>>(review.CandidateAnimeIdsJson) ?? []);
+        var ids = candidateIds.Values.SelectMany(list => list)
+            .Concat(reviews.Where(review => review.ResolvedAnimeId is not null).Select(review => review.ResolvedAnimeId!.Value))
+            .Distinct().ToList();
+        var anime = await db.Animes.AsNoTracking().Include(item => item.TitleAliases).Where(item => ids.Contains(item.Id)).ToDictionaryAsync(item => item.Id);
+        var stats = await CatalogueNameUsage.LoadAsync(db);
+
+        var cases = new List<MatchReplayCase>();
+        var skipped = new Dictionary<string, int>();
+        void Skip(string reason) => skipped[reason] = skipped.GetValueOrDefault(reason) + 1;
+        foreach (var review in reviews)
+        {
+            var snapshot = JsonSerializer.Deserialize<AnimeImportSnapshot>(review.PayloadJson);
+            if (snapshot is null) { Skip("the incoming record could not be read"); continue; }
+            var resolved = review.ResolvedAnimeId is int resolvedId ? anime.GetValueOrDefault(resolvedId) : null;
+            var merged = review.Status == "Merged";
+            List<Anime> candidates;
+            HashSet<string> added;
+            if (merged)
+            {
+                if (resolved is null) { Skip("the merged record no longer exists"); continue; }
+                var restore = string.IsNullOrWhiteSpace(review.PreMergeSnapshotJson) ? null : JsonSerializer.Deserialize<AnimeRestorePoint>(review.PreMergeSnapshotJson);
+                // Without it the target already carries the incoming names and would always look like a match.
+                if (restore is null) { Skip("no pre-merge copy of the merged record was saved"); continue; }
+                var before = MatchReplay.BeforeMerge(resolved.Id, restore);
+                candidates = candidateIds[review.Id].Select(id => id == resolved.Id ? before : anime.GetValueOrDefault(id)).OfType<Anime>().ToList();
+                added = MatchReplay.CountedNames(resolved);
+                added.ExceptWith(MatchReplay.CountedNames(before));
+            }
+            else
+            {
+                candidates = candidateIds[review.Id].Where(id => id != review.ResolvedAnimeId).Select(id => anime.GetValueOrDefault(id)).OfType<Anime>().ToList();
+                added = resolved is null ? [] : MatchReplay.CountedNames(resolved);
+            }
+            var example = new MatchReplayExample(review.Id, AnimeCacheService.FromSnapshot(snapshot), candidates, merged, merged ? resolved!.Id : null, added);
+            cases.Add(MatchReplay.Evaluate(example, normalized, stats));
+        }
+        return new MatchReplayReport(cases, skipped);
     }
 
     public async Task<List<AutoResolvedReviewItem>> GetAutoResolvedAsync(int take = 100)

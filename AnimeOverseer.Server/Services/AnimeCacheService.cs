@@ -614,18 +614,18 @@ public class AnimeCacheService(AnimeDbContext db, AniListApiService aniList, Jik
         return review;
     }
 
-    private Func<string, int>? _nameUsage;
+    private CatalogueNameStats? _nameStats;
 
     /// <summary>
     /// Catalogue name usage, loaded once per service instance. Rows added later in the
     /// same import are not counted, which only makes a shared alias look slightly rarer.
     /// </summary>
-    private async Task<Func<string, int>> NameUsageAsync(CancellationToken ct)
-        => _nameUsage ??= await CatalogueNameUsage.LoadAsync(db, ct);
+    private async Task<CatalogueNameStats> NameUsageAsync(CancellationToken ct)
+        => _nameStats ??= await CatalogueNameUsage.LoadAsync(db, ct);
 
-    private static List<CandidateMatch> ScoreCandidates(Anime source, IEnumerable<Anime> candidates, MatchScoring scoring, Func<string, int> nameUsage)
+    private static List<CandidateMatch> ScoreCandidates(Anime source, IEnumerable<Anime> candidates, MatchScoring scoring, CatalogueNameStats nameStats)
         => candidates.DistinctBy(candidate => candidate.Id)
-            .Select(candidate => MatchScorer.Score(source, candidate, scoring, nameUsage))
+            .Select(candidate => MatchScorer.Score(source, candidate, scoring, nameStats))
             .OrderByDescending(match => match.Score)
             .ToList();
 

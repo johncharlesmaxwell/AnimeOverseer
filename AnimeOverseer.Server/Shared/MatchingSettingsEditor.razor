@@ -69,6 +69,7 @@ else
                     <label class="matching-penalty" title="Read from the main and original titles: Season 2, 2nd Season, S2, Part 2, Cour 2, Final Season, Zoku, Shippuden, 第2期">Titles name different seasons or parts <input type="number" min="0" max="100" @bind="_form.Scoring.SeasonMismatchPenalty" @bind:after="Changed" /></label>
                     <label class="matching-toggle" title="An alias used by 3 catalogue entries earns a third of the alias points"><input type="checkbox" @bind="_form.Scoring.ScaleSharedAliases" @bind:after="Changed" /> Aliases shared by several entries count for less</label>
                     <label class="matching-toggle" title="Yuuki, Yūki and Yuki; Toukyou and Tokyo"><input type="checkbox" @bind="_form.Scoring.MatchRomajiSpellings" @bind:after="Changed" /> Match romaji long-vowel spellings</label>
+                    <label class="matching-toggle" title="When titles are only similar, sharing a word few catalogue entries use (Frieren) counts for more than sharing a common one (no, the, s2)"><input type="checkbox" @bind="_form.Scoring.WeightRareWords" @bind:after="Changed" /> Rare words count for more in similar titles</label>
                 </fieldset>
                 <fieldset>
                     <legend>Start date</legend>
@@ -158,6 +159,64 @@ else
             }
             <button @onclick="RefreshPreviewAsync" disabled="@_working">Update preview</button>
         </section>
+
+        <section class="settings-card matching-section">
+            <h3>Test against past decisions</h3>
+            <p>Replays every review you merged or created yourself and checks whether these settings would have decided it the same way. Merged records are scored as they were before the merge.</p>
+            @if (_replay is not null)
+            {
+                @if (_replay.Total == 0) { <p>You have not decided any reviews yet, so there is nothing to test against.</p> }
+                else
+                {
+                    <p>With @(_replayDirty ? "these unsaved" : "the saved") settings, of the <strong>@_replay.Total</strong> reviews you decided:</p>
+                    <div class="matching-preview">
+                        @ReplayTile("agreed", _replay.Agreed.Count, "same as you")
+                        @ReplayTile("wrong-merge", _replay.WrongMerges.Count, "wrong merges")
+                        @ReplayTile("wrong-create", _replay.WrongCreates.Count, "wrong creates")
+                        @ReplayTile("abstained", _replay.Abstained.Count, "left for you")
+                    </div>
+                    <p class="matching-note">
+                        @if (_replay.Precision is double precision) { <span>Of the decisions these settings would make, <strong>@precision.ToString("P0")</strong> match yours. </span> }
+                        @if (_replay.PersonMerges > 0)
+                        {
+                            <span>Your merge target scored highest in <strong>@(_replay.PersonMerges - _replay.PersonChoiceNotTop.Count) of @_replay.PersonMerges</strong> merges</span>
+                            @if (_replay.PersonChoiceNotTop.Count > 0) { <span> (<button type="button" class="matching-plain" @onclick='() => ToggleReplay("not-top")'>see the @_replay.PersonChoiceNotTop.Count</button>)</span> }
+                            <span>. </span>
+                        }
+                        @if (_replay.PersonChoiceConflicts.Count > 0)
+                        {
+                            <span class="matching-warning">@_replay.PersonChoiceConflicts.Count merges went to a candidate scored as a hard conflict, so a conflict rule is stricter than you are
+                                (<button type="button" class="matching-plain" @onclick='() => ToggleReplay("conflict")'>see them</button>).</span>
+                        }
+                    </p>
+                    @if (_replay.Skipped.Count > 0)
+                    {
+                        <p class="matching-note">Not tested: @string.Join("; ", _replay.Skipped.Select(pair => $"{pair.Value} because {pair.Key}")).</p>
+                    }
+                    @if (_replayExpanded is not null)
+                    {
+                        var shownReplay = ExpandedReplay;
+                        <div class="matching-preview-list">
+                            <div class="matching-preview-list-heading">
+                                <strong>@ReplayTitle (@shownReplay.Count)</strong>
+                                <button type="button" class="matching-plain" @onclick="() => ToggleReplay(_replayExpanded)">Close</button>
+                            </div>
+                            @if (shownReplay.Count == 0) { <p>No reviews here.</p> }
+                            @foreach (var item in shownReplay.Take(_replayShownCount))
+                            {
+                                @ReplayRow(item)
+                            }
+                            @if (shownReplay.Count > _replayShownCount)
+                            {
+                                <button type="button" @onclick="() => _replayShownCount += PreviewPageSize">Show @Math.Min(PreviewPageSize, shownReplay.Count - _replayShownCount) more</button>
+                            }
+                        </div>
+                    }
+                    @if (_replayStale) { <p class="matching-note">Settings have changed since this test ran.</p> }
+                }
+            }
+            <button @onclick="RunReplayAsync" disabled="@_working">@(_replay is null ? "Run test" : "Run again")</button>
+        </section>
     </div>
 }
 
@@ -188,7 +247,91 @@ else
     {
         _dirty = true;
         _notice = null;
+        if (_replay is not null) _replayStale = true;
     }
+
+    private MatchReplayReport? _replay;
+    private bool _replayDirty;
+    private bool _replayStale;
+    private string? _replayExpanded;
+    private int _replayShownCount = PreviewPageSize;
+
+    private async Task RunReplayAsync()
+    {
+        _working = true;
+        _replayDirty = _dirty;
+        _replay = await ReviewService.ReplayDecisionsAsync(Current);
+        _replayStale = false;
+        _working = false;
+    }
+
+    private void ToggleReplay(string key)
+    {
+        _replayExpanded = _replayExpanded == key ? null : key;
+        _replayShownCount = PreviewPageSize;
+    }
+
+    private List<MatchReplayCase> ExpandedReplay => _replayExpanded switch
+    {
+        "agreed" => _replay!.Agreed,
+        "wrong-merge" => _replay!.WrongMerges,
+        "wrong-create" => _replay!.WrongCreates,
+        "abstained" => _replay!.Abstained,
+        "not-top" => _replay!.PersonChoiceNotTop,
+        "conflict" => _replay!.PersonChoiceConflicts,
+        _ => []
+    };
+
+    private string ReplayTitle => _replayExpanded switch
+    {
+        "agreed" => "Same as you",
+        "wrong-merge" => "Would merge where you did not",
+        "wrong-create" => "Would create where you merged",
+        "abstained" => "Would leave for you",
+        "not-top" => "Your merge target did not score highest",
+        "conflict" => "Your merge target scored as a hard conflict",
+        _ => ""
+    };
+
+    private RenderFragment ReplayTile(string key, int count, string label) => @<button type="button" class="matching-preview-tile @(_replayExpanded == key ? "active" : "")" aria-expanded="@(_replayExpanded == key)" disabled="@(count == 0)" @onclick="() => ToggleReplay(key)"><strong>@count</strong><span>@label</span></button>;
+
+    private RenderFragment ReplayRow(MatchReplayCase item) => __builder =>
+    {
+        var chosen = item.CandidateById(item.PersonAnimeId);
+        var suggested = item.CandidateById(item.Suggestion?.AnimeId);
+        // Show the evidence behind whichever row the disagreement is about.
+        var shown = suggested ?? chosen ?? item.Candidates.OrderByDescending(candidate => item.Matches.GetValueOrDefault(candidate.Id)?.Score ?? 0).FirstOrDefault();
+        var match = shown is null ? null : item.Matches.GetValueOrDefault(shown.Id);
+        var confidence = match is null ? null : MatchScorer.Confidence(match, Current.Scoring);
+        <div class="matching-preview-row">
+            <div class="matching-preview-side">
+                <span class="review-label">Incoming</span>
+                <strong>@item.Source.Title</strong>
+                <span class="review-muted">@Describe(item.Source.StartDate, item.Source.Type, item.Source.Episodes)</span>
+            </div>
+            <div class="review-arrow">→</div>
+            <div class="matching-preview-side">
+                <span class="review-label">You</span>
+                @if (chosen is not null) { <span>Merged into <a href="/anime/@chosen.Id">@chosen.Title</a> (@item.PersonChoiceScore)</span> }
+                else { <span>Created as new</span> }
+                <span class="review-label">These settings</span>
+                @if (item.Suggestion is null) { <span>Leave for you</span> }
+                else if (suggested is not null) { <span>Merge into <a href="/anime/@suggested.Id">@suggested.Title</a> (@item.Matches.GetValueOrDefault(suggested.Id)?.Score)</span> }
+                else { <span>Create as new</span> }
+            </div>
+            <div class="matching-preview-evidence">
+                @if (match is not null)
+                {
+                    <span class="review-score review-score-@confidence!.ToLowerInvariant()">@shown!.Title · @confidence · @match.Score</span>
+                    @foreach (var evidence in match.Evidence.Where(evidence => evidence.Kind != MatchEvidenceKind.Neutral))
+                    {
+                        <span class="review-evidence-item review-evidence-@evidence.Kind.ToString().ToLowerInvariant()">@EvidenceLabel(evidence) @evidence.Detail</span>
+                    }
+                }
+                @if (item.Suggestion is not null) { <span class="matching-preview-why">Because @item.Suggestion.Explanation.</span> }
+            </div>
+        </div>
+    };
 
     private void ResetToDefaults()
     {
@@ -356,6 +499,7 @@ else
         public int SeasonMismatchPenalty { get; set; }
         public bool ScaleSharedAliases { get; set; }
         public bool MatchRomajiSpellings { get; set; }
+        public bool WeightRareWords { get; set; }
         public int StartWithinMonth { get; set; }
         public int StartWithinSixMonths { get; set; }
         public int StartUnderYearPenalty { get; set; }
@@ -379,7 +523,7 @@ else
         {
             MainTitleExact = s.MainTitleExact, OriginalTitleExact = s.OriginalTitleExact, AliasMatch = s.AliasMatch,
             SimilarTitleMax = s.SimilarTitleMax, SeasonMismatchPenalty = s.SeasonMismatchPenalty,
-            ScaleSharedAliases = s.ScaleSharedAliases, MatchRomajiSpellings = s.MatchRomajiSpellings,
+            ScaleSharedAliases = s.ScaleSharedAliases, MatchRomajiSpellings = s.MatchRomajiSpellings, WeightRareWords = s.WeightRareWords,
             StartWithinMonth = s.StartWithinMonth, StartWithinSixMonths = s.StartWithinSixMonths, StartUnderYearPenalty = s.StartUnderYearPenalty,
             StartYearApartIsConflict = s.StartYearApartIsConflict, StartYearApartPenalty = s.StartYearApartPenalty,
             FormatSame = s.FormatSame, FormatDifferPenalty = s.FormatDifferPenalty, MovieVsSeriesIsConflict = s.MovieVsSeriesIsConflict,
@@ -393,7 +537,7 @@ else
         {
             MainTitleExact = MainTitleExact, OriginalTitleExact = OriginalTitleExact, AliasMatch = AliasMatch,
             SimilarTitleMax = SimilarTitleMax, SeasonMismatchPenalty = SeasonMismatchPenalty,
-            ScaleSharedAliases = ScaleSharedAliases, MatchRomajiSpellings = MatchRomajiSpellings,
+            ScaleSharedAliases = ScaleSharedAliases, MatchRomajiSpellings = MatchRomajiSpellings, WeightRareWords = WeightRareWords,
             StartWithinMonth = StartWithinMonth, StartWithinSixMonths = StartWithinSixMonths, StartUnderYearPenalty = StartUnderYearPenalty,
             StartYearApartIsConflict = StartYearApartIsConflict, StartYearApartPenalty = StartYearApartPenalty,
             FormatSame = FormatSame, FormatDifferPenalty = FormatDifferPenalty, MovieVsSeriesIsConflict = MovieVsSeriesIsConflict,
