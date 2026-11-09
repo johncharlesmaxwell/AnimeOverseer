@@ -217,20 +217,51 @@ public sealed class AnimeReviewService(AnimeDbContext db, AnimeCacheService cach
         return new MatchReplayReport(cases, skipped);
     }
 
-    public async Task<List<AutoResolvedReviewItem>> GetAutoResolvedAsync()
+    /// <summary>
+    /// One page of automatic decisions, searched, filtered and sorted in SQL so the tab never
+    /// loads the whole history. Only the page's rows have their payload read.
+    /// </summary>
+    public async Task<ReviewListPage<AutoResolvedReviewItem>> GetAutoResolvedPageAsync(ReviewListQuery request)
     {
-        var reviews = await db.PendingAnimeReviews
-            .Where(review => review.AutoResolved && (review.Status == "Merged" || review.Status == "Created"))
-            .OrderByDescending(review => review.ResolvedAt)
+        var query = db.PendingAnimeReviews.AsNoTracking()
+            .Where(review => review.AutoResolved && (review.Status == "Merged" || review.Status == "Created"));
+        query = request.Show switch
+        {
+            "merged" => query.Where(review => review.Status == "Merged"),
+            "created" => query.Where(review => review.Status == "Created"),
+            _ => query
+        };
+        foreach (var pattern in ReviewListQuery.LikePatterns(request.Search))
+            query = query.Where(review =>
+                EF.Functions.Like(review.SourceTitle, pattern, ReviewListQuery.LikeEscape) ||
+                EF.Functions.Like(review.Reason, pattern, ReviewListQuery.LikeEscape) ||
+                db.Animes.Any(anime => anime.Id == review.ResolvedAnimeId && EF.Functions.Like(anime.Title, pattern, ReviewListQuery.LikeEscape)));
+        query = request.Sort switch
+        {
+            "oldest" => query.OrderBy(review => review.ResolvedAt).ThenBy(review => review.Id),
+            "title" => query.OrderBy(review => EF.Functions.Collate(review.SourceTitle ?? "", "NOCASE")).ThenBy(review => review.Id),
+            _ => query.OrderByDescending(review => review.ResolvedAt).ThenByDescending(review => review.Id)
+        };
+        var matching = await query.CountAsync();
+        var page = ReviewListQuery.ClampPage(request.Page, matching, request.PageSize);
+        // Leaves out PreMergeSnapshotJson, a full copy of the merged record kept only for undo.
+        var rows = await query.Skip((page - 1) * request.PageSize).Take(request.PageSize)
+            .Select(review => new PendingAnimeReview
+            {
+                Id = review.Id, Status = review.Status, Reason = review.Reason, ResolvedAt = review.ResolvedAt, ResolvedAnimeId = review.ResolvedAnimeId,
+                PayloadJson = review.PayloadJson, SourceTitle = review.SourceTitle, SourceAniListId = review.SourceAniListId, SourceMalId = review.SourceMalId,
+                AutoResolved = review.AutoResolved, CreatedAt = review.CreatedAt
+            })
             .ToListAsync();
-        var ids = reviews.Where(review => review.ResolvedAnimeId is not null).Select(review => review.ResolvedAnimeId!.Value).Distinct().ToList();
-        var anime = await db.Animes.Include(item => item.Season).Where(item => ids.Contains(item.Id)).ToDictionaryAsync(item => item.Id);
-        return reviews.Select(review => new AutoResolvedReviewItem
+        var ids = rows.Where(review => review.ResolvedAnimeId is not null).Select(review => review.ResolvedAnimeId!.Value).Distinct().ToList();
+        var anime = await db.Animes.AsNoTracking().Include(item => item.Season).Where(item => ids.Contains(item.Id)).ToDictionaryAsync(item => item.Id);
+        var items = rows.Select(review => new AutoResolvedReviewItem
         {
             Review = review,
             Incoming = JsonSerializer.Deserialize<AnimeImportSnapshot>(review.PayloadJson) ?? new(),
             Resolved = review.ResolvedAnimeId is int id ? anime.GetValueOrDefault(id) : null
         }).ToList();
+        return new ReviewListPage<AutoResolvedReviewItem>(items, matching, page);
     }
 
     public Task<int> GetAutoResolvedCountAsync() =>
@@ -262,24 +293,39 @@ public sealed class AnimeReviewService(AnimeDbContext db, AnimeCacheService cach
         return true;
     }
 
-    public async Task<List<RememberedDecisionItem>> GetRememberedDecisionsAsync()
+    /// <summary>One page of remembered decisions, searched, filtered and sorted in SQL.</summary>
+    public async Task<ReviewListPage<RememberedDecisionItem>> GetRememberedDecisionsPageAsync(ReviewListQuery request)
     {
-        var decisions = await db.AnimeMatchDecisions.OrderByDescending(decision => decision.DecidedAt).ToListAsync();
-        var ids = decisions.Select(decision => decision.AnimeId).Distinct().ToList();
-        var titles = await db.Animes.Where(anime => ids.Contains(anime.Id)).ToDictionaryAsync(anime => anime.Id, anime => anime.Title);
-        // The source's own title lives only in the review that produced the decision.
-        var aniListIds = decisions.Where(decision => decision.SourceAniListId is not null).Select(decision => decision.SourceAniListId).Distinct().ToList();
-        var malIds = decisions.Where(decision => decision.SourceMalId is not null).Select(decision => decision.SourceMalId).Distinct().ToList();
-        var sourceTitles = (await db.PendingAnimeReviews.Where(review => aniListIds.Contains(review.SourceAniListId) || malIds.Contains(review.SourceMalId))
-                .Select(review => new { review.SourceAniListId, review.SourceMalId, review.PayloadJson }).ToListAsync())
-            .Select(review => (review.SourceAniListId, review.SourceMalId, Title: JsonSerializer.Deserialize<AnimeImportSnapshot>(review.PayloadJson)?.Title))
-            .ToList();
-        return decisions.Select(decision => new RememberedDecisionItem
+        var query = db.AnimeMatchDecisions.AsNoTracking()
+            .Select(decision => new { Decision = decision, AnimeTitle = db.Animes.Where(anime => anime.Id == decision.AnimeId).Select(anime => anime.Title).FirstOrDefault() });
+        query = request.Show switch
         {
-            Decision = decision,
-            AnimeTitle = titles.GetValueOrDefault(decision.AnimeId) ?? $"#{decision.AnimeId}",
-            SourceTitle = sourceTitles.FirstOrDefault(source => decision.AppliesTo(source.SourceAniListId, source.SourceMalId)).Title
+            "same" => query.Where(row => row.Decision.IsSameAnime),
+            "different" => query.Where(row => !row.Decision.IsSameAnime),
+            _ => query
+        };
+        var origin = request.Show2 switch { "merge" => "Merge", "create" => "Create", "undo" => "Undo", _ => null };
+        if (origin is not null) query = query.Where(row => row.Decision.Origin == origin);
+        foreach (var pattern in ReviewListQuery.LikePatterns(request.Search))
+            query = query.Where(row =>
+                EF.Functions.Like(row.Decision.SourceTitle, pattern, ReviewListQuery.LikeEscape) ||
+                EF.Functions.Like(row.AnimeTitle, pattern, ReviewListQuery.LikeEscape));
+        query = request.Sort switch
+        {
+            "oldest" => query.OrderBy(row => row.Decision.DecidedAt).ThenBy(row => row.Decision.Id),
+            "title" => query.OrderBy(row => EF.Functions.Collate(row.AnimeTitle ?? "", "NOCASE")).ThenBy(row => row.Decision.Id),
+            _ => query.OrderByDescending(row => row.Decision.DecidedAt).ThenByDescending(row => row.Decision.Id)
+        };
+        var matching = await query.CountAsync();
+        var page = ReviewListQuery.ClampPage(request.Page, matching, request.PageSize);
+        var rows = await query.Skip((page - 1) * request.PageSize).Take(request.PageSize).ToListAsync();
+        var items = rows.Select(row => new RememberedDecisionItem
+        {
+            Decision = row.Decision,
+            AnimeTitle = row.AnimeTitle ?? $"#{row.Decision.AnimeId}",
+            SourceTitle = row.Decision.SourceTitle
         }).ToList();
+        return new ReviewListPage<RememberedDecisionItem>(items, matching, page);
     }
 
     public Task<int> GetRememberedDecisionCountAsync() => db.AnimeMatchDecisions.CountAsync();
@@ -355,7 +401,7 @@ public sealed class AnimeReviewService(AnimeDbContext db, AnimeCacheService cach
             snapshot.AlternativeTitles.Add(snapshot.Title);
         snapshot.Title = title;
         snapshot.HasEnglishTitle = true;
-        review.PayloadJson = JsonSerializer.Serialize(snapshot);
+        review.SetPayload(snapshot);
         await db.SaveChangesAsync();
         return true;
     }
@@ -438,3 +484,21 @@ public sealed class MatchingPreview(List<PendingAnimeReviewItem> items, MatchSco
     private static string Confidence(PendingAnimeReviewItem item, MatchScoring scoring)
         => item.BestMatch is { } best ? MatchScorer.Confidence(best, scoring) : None;
 }
+
+/// <summary>What a review list page asks for: search words, the filter bar's choices, and the page.</summary>
+public sealed record ReviewListQuery(string? Search, string? Show, string? Show2, string? Sort, int Page, int PageSize)
+{
+    public const string LikeEscape = "\\";
+
+    /// <summary>One case-insensitive LIKE pattern per search word; a row must match every word.</summary>
+    public static IEnumerable<string> LikePatterns(string? search) =>
+        (search ?? string.Empty).Split(' ', StringSplitOptions.RemoveEmptyEntries)
+            .Select(word => "%" + word.Replace("\\", "\\\\").Replace("%", "\\%").Replace("_", "\\_") + "%");
+
+    /// <summary>Keeps a requested page inside the matching rows.</summary>
+    public static int ClampPage(int page, int matching, int pageSize) =>
+        Math.Clamp(page, 1, Math.Max(1, (int)Math.Ceiling(matching / (double)Math.Max(1, pageSize))));
+}
+
+/// <summary>One page of a review list, how many rows match the filters, and the page actually returned.</summary>
+public sealed record ReviewListPage<T>(List<T> Items, int Matching, int Page);

@@ -193,6 +193,8 @@ public class PendingAnimeReview
     public int? SourceMalId { get; set; }
     public string Reason { get; set; } = string.Empty;
     public string PayloadJson { get; set; } = string.Empty;
+    // The snapshot's title (or original title when it has none), copied out of PayloadJson so lists can search and sort in SQL.
+    public string? SourceTitle { get; set; }
     public string CandidateAnimeIdsJson { get; set; } = "[]";
     // The best candidate's 0-100 match score, and every candidate's scored
     // evidence. Null on reviews queued before match scoring existed.
@@ -212,6 +214,19 @@ public class PendingAnimeReview
     // A Deferred review stays snoozed until this time; later imports of the same
     // source then reopen it. Null on reviews deferred before snoozing existed.
     public DateTime? DeferredUntil { get; set; }
+
+    /// <summary>Stores the import snapshot, keeping <see cref="SourceTitle"/> in step with it.</summary>
+    public void SetPayload(AnimeImportSnapshot snapshot)
+    {
+        PayloadJson = System.Text.Json.JsonSerializer.Serialize(snapshot);
+        SourceTitle = ListTitle(snapshot);
+    }
+
+    /// <summary>The title a list shows and searches for a snapshot: its title, else its original title.</summary>
+    public static string? ListTitle(AnimeImportSnapshot snapshot) =>
+        !string.IsNullOrWhiteSpace(snapshot.Title) ? snapshot.Title.Trim()
+        : !string.IsNullOrWhiteSpace(snapshot.OriginalTitle) ? snapshot.OriginalTitle.Trim()
+        : null;
 }
 
 /// <summary>
@@ -226,6 +241,8 @@ public class AnimeMatchDecision
     public int AnimeId { get; set; }
     public bool IsSameAnime { get; set; }
     public string Origin { get; set; } = string.Empty; // Merge, Create, Undo
+    // The provider record's title when the answer was given, for listing and searching.
+    public string? SourceTitle { get; set; }
     public DateTime DecidedAt { get; set; } = DateTime.UtcNow;
 
     public bool AppliesTo(int? aniListId, int? malId) =>

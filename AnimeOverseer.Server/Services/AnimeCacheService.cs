@@ -428,8 +428,8 @@ public class AnimeCacheService(AnimeDbContext db, AniListApiService aniList, Jik
             // and the others are not.
             var (aniListId, malId) = SourceIds(review, snapshot);
             foreach (var candidateId in JsonSerializer.Deserialize<List<int>>(review.CandidateAnimeIdsJson) ?? [])
-                if (candidateId != target.Id) await RememberAsync(aniListId, malId, candidateId, isSame: false, decision, ct);
-            if (decision == "Merge") await RememberAsync(aniListId, malId, target.Id, isSame: true, decision, ct);
+                if (candidateId != target.Id) await RememberAsync(aniListId, malId, PendingAnimeReview.ListTitle(snapshot), candidateId, isSame: false, decision, ct);
+            if (decision == "Merge") await RememberAsync(aniListId, malId, PendingAnimeReview.ListTitle(snapshot), target.Id, isSame: true, decision, ct);
         }
         await db.SaveChangesAsync(ct);
         return true;
@@ -439,7 +439,7 @@ public class AnimeCacheService(AnimeDbContext db, AniListApiService aniList, Jik
         => (snapshot.AniListId is > 0 ? snapshot.AniListId : review.SourceAniListId, snapshot.MALId is > 0 ? snapshot.MALId : review.SourceMalId);
 
     /// <summary>Records one same/different answer, replacing any earlier answer for the pair.</summary>
-    private async Task RememberAsync(int? aniListId, int? malId, int animeId, bool isSame, string origin, CancellationToken ct)
+    private async Task RememberAsync(int? aniListId, int? malId, string? sourceTitle, int animeId, bool isSame, string origin, CancellationToken ct)
     {
         if (aniListId is not > 0 && malId is not > 0) return;
         if (!await db.Animes.AnyAsync(anime => anime.Id == animeId, ct)) return;
@@ -449,7 +449,8 @@ public class AnimeCacheService(AnimeDbContext db, AniListApiService aniList, Jik
         db.AnimeMatchDecisions.Add(new AnimeMatchDecision
         {
             SourceAniListId = aniListId is > 0 ? aniListId : null, SourceMalId = malId is > 0 ? malId : null,
-            AnimeId = animeId, IsSameAnime = isSame, Origin = origin
+            AnimeId = animeId, IsSameAnime = isSame, Origin = origin,
+            SourceTitle = string.IsNullOrWhiteSpace(sourceTitle) ? null : sourceTitle
         });
     }
 
@@ -603,7 +604,7 @@ public class AnimeCacheService(AnimeDbContext db, AniListApiService aniList, Jik
         review.SourceAniListId = source.AniListId;
         review.SourceMalId = source.MALId;
         review.Reason = prior is null ? reason : $"{reason} · reopened after being deferred";
-        review.PayloadJson = JsonSerializer.Serialize(ToSnapshot(source));
+        review.SetPayload(ToSnapshot(source));
         review.CandidateAnimeIdsJson = JsonSerializer.Serialize(candidates.Select(candidate => candidate.Id).Distinct());
         review.MatchScore = matches.FirstOrDefault()?.Score;
         review.MatchEvidenceJson = JsonSerializer.Serialize(matches);
@@ -689,7 +690,7 @@ public class AnimeCacheService(AnimeDbContext db, AniListApiService aniList, Jik
         candidates = WithoutRejected(await DecisionsForAsync(source.AniListId, source.MALId, ct), source, candidates);
         snapshot.AniListId = source.AniListId;
         snapshot.MALId = source.MALId;
-        review.PayloadJson = JsonSerializer.Serialize(snapshot);
+        review.SetPayload(snapshot);
 
         var confirmedId = source.AniListId is > 0
             ? await db.Animes.Where(item => item.AniListId == source.AniListId).Select(item => (int?)item.Id).FirstOrDefaultAsync(ct)
@@ -776,7 +777,7 @@ public class AnimeCacheService(AnimeDbContext db, AniListApiService aniList, Jik
             await RestoreAsync(target, restore, ct);
             var snapshot = JsonSerializer.Deserialize<AnimeImportSnapshot>(review.PayloadJson) ?? new();
             var (aniListId, malId) = SourceIds(review, snapshot);
-            await RememberAsync(aniListId, malId, animeId, isSame: false, "Undo", ct);
+            await RememberAsync(aniListId, malId, PendingAnimeReview.ListTitle(snapshot), animeId, isSame: false, "Undo", ct);
         }
 
         review.Status = "Pending";

@@ -231,6 +231,9 @@ namespace AnimeOverseer.Server.Migrations
                     b.Property<int?>("SourceMalId")
                         .HasColumnType("INTEGER");
 
+                    b.Property<string>("SourceTitle")
+                        .HasColumnType("TEXT");
+
                     b.HasKey("Id");
 
                     b.HasIndex("AnimeId");
@@ -583,6 +586,7 @@ namespace AnimeOverseer.Server.Migrations
                     b.Property<int?>("SourceAniListId").HasColumnType("INTEGER");
                     b.Property<int?>("SourceMalId").HasColumnType("INTEGER");
                     b.Property<string>("SourceName").IsRequired().HasColumnType("TEXT");
+                    b.Property<string>("SourceTitle").HasColumnType("TEXT");
                     b.Property<string>("Status").IsRequired().HasColumnType("TEXT");
                     b.Property<int?>("SyncJobId").HasColumnType("INTEGER");
 

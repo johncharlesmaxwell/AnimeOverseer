@@ -129,7 +129,7 @@ public sealed class MatchDecisionMemoryTests : SqliteIntegrationTestBase
         await db.SaveChangesAsync();
         var reviews = new AnimeReviewService(db, CreateCache(db));
 
-        var remembered = Assert.Single(await reviews.GetRememberedDecisionsAsync());
+        var remembered = Assert.Single((await reviews.GetRememberedDecisionsPageAsync(new ReviewListQuery(null, null, null, null, 1, 24))).Items);
         Assert.True(await reviews.ForgetDecisionAsync(remembered.Decision.Id));
         await ImportAsync(db, Incoming(82, "Orbit", true));
 

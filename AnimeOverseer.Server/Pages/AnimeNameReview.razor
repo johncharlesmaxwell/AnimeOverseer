@@ -153,7 +153,7 @@
     private static readonly KeyValuePair<string, string>[] NameSorts = [Option("title", "Title A–Z"), Option("title-desc", "Title Z–A"), Option("aired", "Aired, newest first"), Option("aired-asc", "Aired, oldest first"), Option("options", "Most names to choose from")];
     private void ApplyFilters()
     {
-        var query = ReviewPager.QueryValue(Nav, "q");
+        var query = ReviewPager.QueryValue(Nav, "search");
         var show = ReviewPager.QueryValue(Nav, "show");
         var items = (_items ?? [])
             .Where(item => ReviewFilterBar.Matches(query, [item.Anime.Title, item.Anime.OriginalTitle, .. item.Names, .. item.EnglishNames.Select(option => option.Title)]))

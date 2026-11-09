@@ -1,6 +1,7 @@
-@* Search, filter and sort controls for an in-memory review list. State lives in the query string
-   (?q=, ?show=, ?show2=, ?sort=) so it survives reloads and browser back/forward; the parent reads it
-   with ReviewPager.QueryValue and applies it to its own list. *@
+@* Search, filter and sort controls for a review list. State lives in the query string
+   (?search=, ?show=, ?show2=, ?sort=) so it survives reloads and browser back/forward; the parent reads it
+   with ReviewPager.QueryValue and applies it to its list, in memory or in SQL.
+   The search uses ?search= rather than ?q=, which the header's site-wide search box reads on every page. *@
 @inject NavigationManager Nav
 
 <div class="review-filters" role="search" aria-label="@Label">
@@ -51,7 +52,7 @@
     [Parameter] public int Shown { get; set; }
     [Parameter] public int Total { get; set; }
 
-    public static readonly string[] QueryKeys = ["q", "show", "show2", "sort"];
+    public static readonly string[] QueryKeys = ["search", "show", "show2", "sort"];
 
     private string _search = string.Empty;
     private CancellationTokenSource? _debounce;
@@ -59,7 +60,7 @@
     protected override void OnParametersSet()
     {
         // Follow the URL unless the person is mid-typing (a debounce is pending).
-        if (_debounce is null) _search = ReviewPager.QueryValue(Nav, "q") ?? string.Empty;
+        if (_debounce is null) _search = ReviewPager.QueryValue(Nav, "search") ?? string.Empty;
     }
 
     private async Task OnSearchInput(ChangeEventArgs args)
@@ -69,7 +70,7 @@
         var debounce = _debounce = new CancellationTokenSource();
         try { await Task.Delay(300, debounce.Token); } catch (TaskCanceledException) { return; }
         _debounce = null;
-        Set("q", _search, replace: true);
+        Set("search", _search, replace: true);
     }
 
     private void OnSearchKey(KeyboardEventArgs args)
@@ -77,7 +78,7 @@
         if (args.Key != "Escape") return;
         _debounce?.Cancel(); _debounce = null;
         _search = string.Empty;
-        Set("q", null, replace: true);
+        Set("search", null, replace: true);
     }
 
     private void Set(string key, string? value, bool replace = false) =>
