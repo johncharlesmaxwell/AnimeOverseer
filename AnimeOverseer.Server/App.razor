@@ -1,10 +1,11 @@
-﻿<!DOCTYPE html>
+﻿@inject IWebHostEnvironment Environment
+<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <base href="/" />
-    <link rel="stylesheet" href="css/site.css" />
+    <link rel="stylesheet" href="css/site.css?v=@StylesheetVersion" />
     <HeadOutlet />
 </head>
 <body class="dark-theme">
@@ -13,3 +14,8 @@
     <script src="_framework/blazor.web.js"></script>
 </body>
 </html>
+
+@code {
+    // Changes whenever site.css does, so browsers fetch the new file instead of a cached copy.
+    private string StylesheetVersion => Environment.WebRootFileProvider.GetFileInfo("css/site.css").LastModified.ToUnixTimeSeconds().ToString();
+}

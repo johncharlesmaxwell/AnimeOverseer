@@ -16,23 +16,96 @@ public sealed class AnimeReviewService(AnimeDbContext db, AnimeCacheService cach
             .Include(item => item.Season)
             .Include(item => item.Images)
             .Include(item => item.TitleAliases)
+            .Include(item => item.SourceTitles)
             .Where(item => !item.NamesReviewed)
             .OrderBy(item => item.Title)
+            .AsSplitQuery()
             .ToListAsync();
-        return anime.Select(item => new AnimeNameReviewItem
+        var settings = await EnglishNameSettings.LoadAsync(db);
+        return anime.Select(item =>
         {
-            Anime = item,
-            Names = new[] { item.OriginalTitle }
-                .Concat(item.TitleAliases.Select(alias => alias.Title))
-                .Where(name => !string.IsNullOrWhiteSpace(name) && !string.Equals(name, item.Title, StringComparison.OrdinalIgnoreCase))
-                .Select(name => name!.Trim())
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .ToList()
-        }).Where(item => item.Names.Count > 0).ToList();
+            var options = EnglishNamePrecheck.Evaluate(item, settings).Options;
+            bool IsCurrent(string? name) => string.Equals(TitleNormalizer.Compact(name), TitleNormalizer.Compact(item.Title), StringComparison.Ordinal);
+            bool IsEnglishOption(string name) => options.Any(option => string.Equals(TitleNormalizer.Compact(option.Title), TitleNormalizer.Compact(name), StringComparison.Ordinal));
+            return new AnimeNameReviewItem
+            {
+                Anime = item,
+                CurrentSources = options.FirstOrDefault(option => IsCurrent(option.Title))?.Sources ?? [],
+                EnglishNames = options.Where(option => !IsCurrent(option.Title)).ToList(),
+                Names = new[] { item.OriginalTitle }
+                    .Concat(item.TitleAliases.Select(alias => alias.Title))
+                    .Where(name => !string.IsNullOrWhiteSpace(name) && !string.Equals(name, item.Title, StringComparison.OrdinalIgnoreCase))
+                    .Select(name => name!.Trim())
+                    .Where(name => !IsEnglishOption(name))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList()
+            };
+        }).Where(item => item.Names.Count + item.EnglishNames.Count > 0).ToList();
     }
 
     public async Task<int> GetPendingNameCountAsync() =>
-        (await GetNamesPendingReviewAsync()).Sum(item => item.Names.Count);
+        (await GetNamesPendingReviewAsync()).Sum(item => item.Names.Count + item.EnglishNames.Count);
+
+    /// <summary>
+    /// Names each record whose sources settle its English name, and takes it out of name
+    /// review. Records a person has named are never touched; records the pre-check named
+    /// earlier are rechecked, and go back to review if their sources no longer settle it.
+    /// </summary>
+    public async Task<EnglishNamePrecheckResult> ApplyEnglishNamePrecheckAsync(EnglishNameSettings? settings = null, CancellationToken ct = default)
+    {
+        settings ??= await EnglishNameSettings.LoadAsync(db, ct);
+        var anime = await db.Animes
+            .Include(item => item.TitleAliases)
+            .Include(item => item.SourceTitles)
+            .Where(item => (!item.NamesReviewed || item.NameFromSources) && item.SourceTitles.Any())
+            .AsSplitQuery()
+            .ToListAsync(ct);
+        int renamed = 0, confirmed = 0, returned = 0;
+        foreach (var item in anime)
+        {
+            var verdict = EnglishNamePrecheck.Evaluate(item, settings);
+            if (!verdict.Applies)
+            {
+                if (item.NameFromSources)
+                {
+                    item.NamesReviewed = false;
+                    item.NameFromSources = false;
+                    returned++;
+                }
+                continue;
+            }
+            var title = verdict.Title!;
+            if (string.Equals(item.Title, title, StringComparison.Ordinal))
+            {
+                if (item.NamesReviewed) continue;
+                confirmed++;
+            }
+            else
+            {
+                KeepAsAlias(item, item.Title);
+                item.Title = title;
+                renamed++;
+            }
+            item.HasEnglishTitle = true;
+            item.NamesReviewed = true;
+            item.NameFromSources = true;
+        }
+        await db.SaveChangesAsync(ct);
+        return new(renamed, confirmed, returned);
+    }
+
+    public Task<EnglishNameSettings> GetEnglishNameSettingsAsync() => EnglishNameSettings.LoadAsync(db);
+
+    public Task SaveEnglishNameSettingsAsync(EnglishNameSettings settings) => EnglishNameSettings.SaveAsync(db, settings);
+
+    private void KeepAsAlias(Anime anime, string? title)
+    {
+        if (string.IsNullOrWhiteSpace(title) ||
+            anime.TitleAliases.Any(alias => string.Equals(alias.Title, title, StringComparison.OrdinalIgnoreCase))) return;
+        var alias = new AnimeTitleAlias { AnimeId = anime.Id, Title = title };
+        anime.TitleAliases.Add(alias);
+        db.AnimeTitleAliases.Add(alias);
+    }
 
     /// <summary>
     /// The pending queue scored with the saved settings, or with <paramref name="preview"/>
@@ -247,6 +320,7 @@ public sealed class AnimeReviewService(AnimeDbContext db, AnimeCacheService cach
         anime.Title = title;
         anime.HasEnglishTitle = true;
         anime.NamesReviewed = true;
+        anime.NameFromSources = false;
         await db.SaveChangesAsync();
         return true;
     }
@@ -258,6 +332,7 @@ public sealed class AnimeReviewService(AnimeDbContext db, AnimeCacheService cach
         if (anime is null || string.IsNullOrWhiteSpace(anime.Title)) return false;
         anime.HasEnglishTitle = true;
         anime.NamesReviewed = true;
+        anime.NameFromSources = false;
         await db.SaveChangesAsync();
         return true;
     }
@@ -317,6 +392,11 @@ public sealed class AutoResolvedReviewItem
 public sealed class AnimeNameReviewItem
 {
     public Anime Anime { get; init; } = null!;
+    /// <summary>Sources whose English name is the current name.</summary>
+    public IReadOnlyList<string> CurrentSources { get; init; } = [];
+    /// <summary>Other English names the sources give, most-supported first.</summary>
+    public List<EnglishNameOption> EnglishNames { get; init; } = [];
+    /// <summary>Every other held name: romaji, native, synonyms.</summary>
     public List<string> Names { get; init; } = [];
 }
 

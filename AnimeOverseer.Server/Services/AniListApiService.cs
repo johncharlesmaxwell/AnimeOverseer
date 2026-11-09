@@ -228,6 +228,7 @@ public class AniListApiService(HttpClient httpClient, ILogger<AniListApiService>
             MALId = GetInt(element, "idMal"),
             Title = english ?? romaji ?? native ?? "Unknown",
             HasEnglishTitle = !string.IsNullOrWhiteSpace(english),
+            DataSource = "AniList", SourceEnglishTitle = english,
             OriginalTitle = romaji ?? native,
             AlternativeTitles = new[] { english, romaji, native }
                 .Concat(element.TryGetProperty("synonyms", out var synonyms) && synonyms.ValueKind == JsonValueKind.Array

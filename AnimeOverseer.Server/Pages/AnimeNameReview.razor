@@ -7,6 +7,45 @@
 
 <div class="name-review-page">
     <div class="review-heading"><div><h2>Review names</h2><p>Choose the primary English name for each catalogue entry. A name disappears from this list after it is selected.</p></div></div>
+    @if (_precheck is not null)
+    {
+        <section class="name-precheck">
+            <div class="name-precheck-head">
+                <div>
+                    <h3>English names from sources</h3>
+                    <p>Before a record reaches this list, the English titles AniList, MyAnimeList, Kitsu and AnimeSchedule give are compared. When they agree, that name is used and the record skips review. Names you choose here are never changed.</p>
+                </div>
+                <button class="name-precheck-run" disabled="@_running" @onclick="RunPrecheckAsync">@(_running ? "Checking…" : "Check now")</button>
+            </div>
+            <div class="name-precheck-settings">
+                <label><input type="checkbox" checked="@_precheck.Enabled" @onchange="args => SaveAsync(_precheck with { Enabled = args.Value is true })" /> Check after each sync</label>
+                <label>Sources needed
+                    <select value="@_precheck.MinSources" @onchange="SetMinSourcesAsync">
+                        @for (var count = 1; count <= EnglishNameSettings.MaximumMinSources; count++)
+                        {
+                            <option value="@count">@count</option>
+                        }
+                    </select>
+                </label>
+                <label><input type="checkbox" checked="@_precheck.TieBreak" @onchange="args => SaveAsync(_precheck with { TieBreak = args.Value is true })" /> When sources disagree, use the name most give, then the first source below</label>
+            </div>
+            <div class="name-precheck-priority">
+                <span class="review-label">Source order</span>
+                <ol>
+                    @for (var index = 0; index < _precheck.Priority.Count; index++)
+                    {
+                        var position = index;
+                        <li>
+                            <span>@SourceLabel(_precheck.Priority[position])</span>
+                            <button disabled="@(position == 0)" aria-label="Move @SourceLabel(_precheck.Priority[position]) up" @onclick="() => MoveSourceAsync(position, -1)">↑</button>
+                            <button disabled="@(position == _precheck.Priority.Count - 1)" aria-label="Move @SourceLabel(_precheck.Priority[position]) down" @onclick="() => MoveSourceAsync(position, 1)">↓</button>
+                        </li>
+                    }
+                </ol>
+            </div>
+            @if (_precheckMessage is not null) { <p class="name-precheck-result" role="status">@_precheckMessage</p> }
+        </section>
+    }
     @if (_items is null) { <p class="review-muted">Loading names…</p> }
     else if (_items.Count == 0) { <div class="review-empty"><h3>Nothing needs review</h3><p>All held names have already been selected or no alternate names are available.</p></div> }
     else
@@ -42,18 +81,38 @@
                                 <h3><a href="/anime/@item.Anime.Id">@item.Anime.Title</a></h3>
                                 <button class="name-review-confirm" title="Keep this name" aria-label="Keep @item.Anime.Title as the English name" @onclick="() => ConfirmCurrentAsync(item.Anime.Id)">✓</button>
                             </div>
+                            @if (item.CurrentSources.Count > 0)
+                            {
+                                <p class="name-review-sources">English name on @string.Join(" + ", item.CurrentSources.Select(SourceLabel))</p>
+                            }
                         }
                         <p>@item.Anime.Season.Year @item.Anime.Season.Name</p>
                         <a class="review-record-link" href="/anime/@item.Anime.Id">Open record →</a>
                     </div>
                     <div class="name-review-choices">
-                        <span class="review-label">Available names</span>
-                        <div class="name-review-options">
-                            @foreach (var name in item.Names)
-                            {
-                                <div class="name-review-option"><span>@name</span><button @onclick="() => SelectNameAsync(item.Anime.Id, name)">Use this name</button></div>
-                            }
-                        </div>
+                        @if (item.EnglishNames.Count > 0)
+                        {
+                            <span class="review-label">English names from sources</span>
+                            <div class="name-review-options">
+                                @foreach (var option in item.EnglishNames)
+                                {
+                                    <div class="name-review-option name-review-english">
+                                        <span>@option.Title <small>@string.Join(" + ", option.Sources.Select(SourceLabel))</small></span>
+                                        <button @onclick="() => SelectNameAsync(item.Anime.Id, option.Title)">Use this name</button>
+                                    </div>
+                                }
+                            </div>
+                        }
+                        @if (item.Names.Count > 0)
+                        {
+                            <span class="review-label @(item.EnglishNames.Count > 0 ? "name-review-other-label" : null)">@(item.EnglishNames.Count > 0 ? "Other names" : "Available names")</span>
+                            <div class="name-review-options @(item.EnglishNames.Count > 0 ? "name-review-other" : null)">
+                                @foreach (var name in item.Names)
+                                {
+                                    <div class="name-review-option"><span>@name</span><button @onclick="() => SelectNameAsync(item.Anime.Id, name)">Use this name</button></div>
+                                }
+                            </div>
+                        }
                         <div class="review-custom-name"><input value="@CustomName(item.Anime.Id)" @oninput="args => SetCustomName(item.Anime.Id, args.Value?.ToString())" placeholder="Custom English name" /><button @onclick="() => SelectCustomNameAsync(item.Anime.Id)">Use custom</button></div>
                     </div>
                 </article>
@@ -66,8 +125,12 @@
 @code {
     private List<AnimeNameReviewItem>? _items;
     private readonly Dictionary<int, string> _customNames = [];
+    private EnglishNameSettings? _precheck;
+    private bool _running;
+    private string? _precheckMessage;
     protected override async Task OnInitializedAsync()
     {
+        _precheck = await ReviewService.GetEnglishNameSettingsAsync();
         _pageSize = ReviewPagingSettings.Read(await SettingsService.GetAsync(ReviewPagingSettings.NamesKey));
         await ReloadAsync();
         ApplyLocation();
@@ -93,5 +156,34 @@
     private async Task ConfirmCurrentAsync(int animeId) { await ReviewService.ConfirmCurrentTitleAsync(animeId); await ReloadAsync(); }
     private string CustomName(int animeId) => _customNames.GetValueOrDefault(animeId, string.Empty);
     private void SetCustomName(int animeId, string? name) => _customNames[animeId] = name ?? string.Empty;
+    private static string SourceLabel(string source) => source == "MyAnimeList" ? "MAL" : source;
+    private async Task SaveAsync(EnglishNameSettings settings)
+    {
+        await ReviewService.SaveEnglishNameSettingsAsync(settings);
+        _precheck = await ReviewService.GetEnglishNameSettingsAsync();
+        await ReloadAsync();
+    }
+    private Task SetMinSourcesAsync(ChangeEventArgs args)
+        => int.TryParse(args.Value?.ToString(), out var count) ? SaveAsync(_precheck! with { MinSources = count }) : Task.CompletedTask;
+    private Task MoveSourceAsync(int index, int offset)
+    {
+        var order = _precheck!.Priority.ToList();
+        (order[index], order[index + offset]) = (order[index + offset], order[index]);
+        return SaveAsync(_precheck with { Priority = order });
+    }
+    private async Task RunPrecheckAsync()
+    {
+        _running = true;
+        _precheckMessage = null;
+        try
+        {
+            var result = await ReviewService.ApplyEnglishNamePrecheckAsync(_precheck);
+            _precheckMessage = result.Total + result.ReturnedToReview == 0
+                ? "Nothing to change: no remaining record has sources that agree on an English name."
+                : $"{result.Renamed:N0} renamed, {result.Confirmed:N0} current names confirmed, {result.ReturnedToReview:N0} sent back for review.";
+            await ReloadAsync();
+        }
+        finally { _running = false; }
+    }
     private async Task SelectCustomNameAsync(int animeId) { var name = CustomName(animeId); if (string.IsNullOrWhiteSpace(name)) return; await ReviewService.SetMainEnglishTitleAsync(animeId, name, allowCustom: true); await ReloadAsync(); }
 }

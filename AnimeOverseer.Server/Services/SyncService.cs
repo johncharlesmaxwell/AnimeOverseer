@@ -139,7 +139,7 @@ public class SyncService(AnimeDbContext db, IServiceScopeFactory scopeFactory, A
                 var data = await aniList.GetByMalIdAsync(anime.MALId!.Value);
                 if (data != null)
                 {
-                    EnrichFields(anime, data);
+                    await EnrichFieldsAsync(anime, data, ct);
                     syncedIds.Add(anime.Id);
                 }
             }
@@ -198,7 +198,7 @@ public class SyncService(AnimeDbContext db, IServiceScopeFactory scopeFactory, A
                 var data = await kitsu.GetByTitleAsync(anime.Title);
                 if (data != null)
                 {
-                    EnrichFields(anime, data);
+                    await EnrichFieldsAsync(anime, data, ct);
                     syncedIds.Add(anime.Id);
                 }
             }
@@ -568,9 +568,15 @@ public class SyncService(AnimeDbContext db, IServiceScopeFactory scopeFactory, A
         catch (JsonException) { return []; }
     }
 
+    private async Task EnrichFieldsAsync(Anime target, Anime source, CancellationToken ct)
+    {
+        EnrichFields(target, source);
+        await SourceTitleStore.RecordAsync(db, target, source, ct);
+    }
+
     private static void EnrichFields(Anime target, Anime source)
     {
-        if (!target.HasEnglishTitle && source.HasEnglishTitle)
+        if (!target.NamesReviewed && !target.HasEnglishTitle && source.HasEnglishTitle)
         {
             target.Title = source.Title;
             target.HasEnglishTitle = true;

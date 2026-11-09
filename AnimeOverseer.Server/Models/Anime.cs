@@ -37,6 +37,23 @@ public class Anime
     // remaining aliases in the name review queue.
     public bool NamesReviewed { get; set; }
 
+    // The current Title was chosen by the English-name pre-check from the sources'
+    // English titles rather than by a person, so a later pre-check may still update it.
+    public bool NameFromSources { get; set; }
+
+    // Each source's latest explicitly English title, one row per source.
+    public List<AnimeSourceTitle> SourceTitles { get; set; } = new();
+
+    // Which provider this incoming record came from ("AniList", "MyAnimeList",
+    // "Kitsu", "AnimeSchedule") and that provider's own English title, if it has one.
+    // Kept apart from Title so a person's edit to an incoming name is not mistaken
+    // for what the source said.
+    [NotMapped]
+    public string? DataSource { get; set; }
+
+    [NotMapped]
+    public string? SourceEnglishTitle { get; set; }
+
     // Provider-supplied English, romaji, native, and synonym titles used while
     // resolving the catalogue identity. They are retained as AnimeTitleAlias
     // rows after import so aliases from one provider can match future imports.
@@ -151,6 +168,17 @@ public class AnimeTitleAlias
     public string Title { get; set; } = string.Empty;
 }
 
+/// <summary>The English title one source gives for an anime, replaced on each sync from that source.</summary>
+public class AnimeSourceTitle
+{
+    public int Id { get; set; }
+    public int AnimeId { get; set; }
+    public Anime Anime { get; set; } = null!;
+    public string Source { get; set; } = string.Empty;
+    public string Title { get; set; } = string.Empty;
+    public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
+}
+
 /// <summary>
 /// An import whose identity cannot be established safely.  The source record is
 /// retained as a compact JSON snapshot until someone chooses to merge or create it.
@@ -212,6 +240,9 @@ public class AnimeRestorePoint
     public int? PreferredImageId { get; set; }
     public List<string> Aliases { get; set; } = [];
     public List<int> ImageIds { get; set; } = [];
+    public Dictionary<string, string> SourceTitles { get; set; } = [];
+    public bool NamesReviewed { get; set; }
+    public bool NameFromSources { get; set; }
 }
 
 /// <summary>Serializable import fields needed to safely resume a reviewed decision.</summary>
@@ -222,6 +253,8 @@ public class AnimeImportSnapshot
     public int? KitsuId { get; set; }
     public string Title { get; set; } = string.Empty;
     public bool HasEnglishTitle { get; set; }
+    public string? DataSource { get; set; }
+    public string? SourceEnglishTitle { get; set; }
     public string? OriginalTitle { get; set; }
     public List<string> AlternativeTitles { get; set; } = [];
     public string? Synopsis { get; set; }

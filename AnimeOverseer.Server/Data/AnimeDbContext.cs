@@ -13,6 +13,7 @@ public class AnimeDbContext : DbContext
     public DbSet<Anime> Animes { get; set; }
     public DbSet<AnimeImage> AnimeImages { get; set; }
     public DbSet<AnimeTitleAlias> AnimeTitleAliases { get; set; }
+    public DbSet<AnimeSourceTitle> AnimeSourceTitles { get; set; }
     public DbSet<PendingAnimeReview> PendingAnimeReviews { get; set; }
     public DbSet<AnimeMatchDecision> AnimeMatchDecisions { get; set; }
     public DbSet<Genre> Genres { get; set; }
@@ -111,6 +112,10 @@ public class AnimeDbContext : DbContext
 
         modelBuilder.Entity<AnimeTitleAlias>()
             .HasIndex(alias => new { alias.AnimeId, alias.Title })
+            .IsUnique();
+
+        modelBuilder.Entity<AnimeSourceTitle>()
+            .HasIndex(title => new { title.AnimeId, title.Source })
             .IsUnique();
 
         modelBuilder.Entity<AnimeRecommendation>()

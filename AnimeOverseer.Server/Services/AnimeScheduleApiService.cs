@@ -55,6 +55,7 @@ public class AnimeScheduleApiService(HttpClient httpClient, SettingsService sett
             MALId = GetMalId(value),
             Title = english ?? Get(value, "title") ?? Get(value, "route") ?? "Unknown",
             HasEnglishTitle = !string.IsNullOrWhiteSpace(english),
+            DataSource = "AnimeSchedule", SourceEnglishTitle = english,
             OriginalTitle = Get(names, "native"),
             AlternativeTitles = value.TryGetProperty("names", out var alternativeNames) ? Names(alternativeNames) : [],
             Synopsis = Get(value, "description"),

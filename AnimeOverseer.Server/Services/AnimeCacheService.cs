@@ -402,7 +402,7 @@ public class AnimeCacheService(AnimeDbContext db, AniListApiService aniList, Jik
         {
             var candidateIds = JsonSerializer.Deserialize<List<int>>(review.CandidateAnimeIdsJson) ?? [];
             if (!candidateIds.Contains(candidateAnimeId.Value)) return false;
-            var existing = await db.Animes.Include(item => item.TitleAliases).Include(item => item.Images)
+            var existing = await db.Animes.Include(item => item.TitleAliases).Include(item => item.Images).Include(item => item.SourceTitles)
                 .Include(item => item.AnimeGenres).ThenInclude(item => item.Genre)
                 .Include(item => item.AnimeThemes).ThenInclude(item => item.Theme)
                 .Include(item => item.AnimeDemographics).ThenInclude(item => item.Demographic)
@@ -754,7 +754,7 @@ public class AnimeCacheService(AnimeDbContext db, AniListApiService aniList, Jik
         {
             var restore = string.IsNullOrWhiteSpace(review.PreMergeSnapshotJson) ? null : JsonSerializer.Deserialize<AnimeRestorePoint>(review.PreMergeSnapshotJson);
             if (restore is null) return "No pre-merge copy of the record was saved.";
-            var target = await db.Animes.Include(item => item.TitleAliases).Include(item => item.Images).FirstOrDefaultAsync(item => item.Id == animeId, ct);
+            var target = await db.Animes.Include(item => item.TitleAliases).Include(item => item.Images).Include(item => item.SourceTitles).FirstOrDefaultAsync(item => item.Id == animeId, ct);
             if (target is null) return "The merged catalogue record no longer exists.";
             await RestoreAsync(target, restore, ct);
             var snapshot = JsonSerializer.Deserialize<AnimeImportSnapshot>(review.PayloadJson) ?? new();
@@ -783,7 +783,10 @@ public class AnimeCacheService(AnimeDbContext db, AniListApiService aniList, Jik
             LocalImagePath = anime.LocalImagePath,
             PreferredImageId = anime.PreferredImageId,
             Aliases = anime.TitleAliases.Select(alias => alias.Title).ToList(),
-            ImageIds = anime.Images.Select(image => image.Id).ToList()
+            ImageIds = anime.Images.Select(image => image.Id).ToList(),
+            SourceTitles = anime.SourceTitles.ToDictionary(title => title.Source, title => title.Title),
+            NamesReviewed = anime.NamesReviewed,
+            NameFromSources = anime.NameFromSources
         };
     }
 
@@ -798,6 +801,12 @@ public class AnimeCacheService(AnimeDbContext db, AniListApiService aniList, Jik
         target.Type = fields.Type; target.Episodes = fields.Episodes; target.Duration = fields.Duration; target.Rating = fields.Rating;
         target.Status = fields.Status; target.StartDate = fields.StartDate; target.EndDate = fields.EndDate;
         db.AnimeTitleAliases.RemoveRange(target.TitleAliases.Where(alias => !restore.Aliases.Contains(alias.Title, StringComparer.OrdinalIgnoreCase)));
+        target.NamesReviewed = restore.NamesReviewed; target.NameFromSources = restore.NameFromSources;
+        foreach (var sourceTitle in target.SourceTitles.ToList())
+        {
+            if (restore.SourceTitles.TryGetValue(sourceTitle.Source, out var title)) sourceTitle.Title = title;
+            else db.AnimeSourceTitles.Remove(sourceTitle);
+        }
         db.AnimeImages.RemoveRange(target.Images.Where(image => !restore.ImageIds.Contains(image.Id)));
         target.PreferredImageId = restore.PreferredImageId is int preferred && restore.ImageIds.Contains(preferred) ? preferred : null;
         await db.SaveChangesAsync(ct);
@@ -861,6 +870,7 @@ public class AnimeCacheService(AnimeDbContext db, AniListApiService aniList, Jik
     {
         AniListId = source.AniListId, MALId = source.MALId, KitsuId = source.KitsuId,
         Title = source.Title, HasEnglishTitle = source.HasEnglishTitle, OriginalTitle = source.OriginalTitle,
+        DataSource = source.DataSource, SourceEnglishTitle = source.SourceEnglishTitle,
         AlternativeTitles = source.AlternativeTitles, Synopsis = source.Synopsis, ImageUrl = source.ImageUrl,
         Type = source.Type, Episodes = source.Episodes, Duration = source.Duration, Rating = source.Rating,
         Status = source.Status, StartDate = source.StartDate, EndDate = source.EndDate,
@@ -874,6 +884,7 @@ public class AnimeCacheService(AnimeDbContext db, AniListApiService aniList, Jik
     {
         AniListId = source.AniListId, MALId = source.MALId, KitsuId = source.KitsuId,
         Title = source.Title, HasEnglishTitle = source.HasEnglishTitle, OriginalTitle = source.OriginalTitle,
+        DataSource = source.DataSource, SourceEnglishTitle = source.SourceEnglishTitle,
         AlternativeTitles = source.AlternativeTitles, Synopsis = source.Synopsis, ImageUrl = source.ImageUrl,
         Type = source.Type, Episodes = source.Episodes, Duration = source.Duration, Rating = source.Rating,
         Status = source.Status, StartDate = source.StartDate, EndDate = source.EndDate, SourceImages = source.SourceImages,
@@ -979,8 +990,10 @@ public class AnimeCacheService(AnimeDbContext db, AniListApiService aniList, Jik
     private static void Copy(Anime t, Anime s)
     {
         // Prefer an explicitly localized English title and never replace it with
-        // a provider's romaji/default title on a later catalogue sync.
-        if (!t.HasEnglishTitle || s.HasEnglishTitle)
+        // a provider's romaji/default title on a later catalogue sync. Once a name
+        // has been reviewed (by a person or the English-name pre-check) a sync leaves
+        // it alone; the source's names are still stored as aliases and source titles.
+        if (!t.NamesReviewed && (!t.HasEnglishTitle || s.HasEnglishTitle))
         {
             t.Title = s.Title;
             t.HasEnglishTitle = s.HasEnglishTitle;
@@ -1015,6 +1028,7 @@ public class AnimeCacheService(AnimeDbContext db, AniListApiService aniList, Jik
 
         foreach (var title in titles.Where(title => existing.Add(title)))
             db.AnimeTitleAliases.Add(new AnimeTitleAlias { Anime = target, Title = title });
+        await SourceTitleStore.RecordAsync(db, target, source, ct);
     }
     private async Task StoreImagesAsync(Anime target, Anime source, CancellationToken ct)
     {
