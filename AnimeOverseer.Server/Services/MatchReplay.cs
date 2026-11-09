@@ -37,6 +37,8 @@ public sealed class MatchReplayCase
     public int? PersonAnimeId { get; init; }
     public Dictionary<int, CandidateMatch> Matches { get; init; } = [];
     public MatchSuggestion? Suggestion { get; init; }
+    /// <summary>Why the settings leave it for a person, when they do.</summary>
+    public string? Undecided { get; init; }
     public MatchReplayOutcome Outcome { get; init; }
 
     /// <summary>The score of the row the person merged into, or null when they created as new.</summary>
@@ -87,6 +89,7 @@ public static class MatchReplay
             .ToDictionary(candidate => candidate.Id, candidate => MatchScorer.Score(example.Source, candidate, settings.Scoring, Usage, stats.TokenWeight));
         // Mode is ignored: the point is to see what the rules would do before switching them on.
         var suggestion = MatchScorer.Suggest(matches.Values.ToList(), settings);
+        var undecided = suggestion is null ? MatchScorer.WhyUndecided(matches.Values.ToList(), settings) : null;
         var outcome = suggestion switch
         {
             null => MatchReplayOutcome.Abstained,
@@ -97,7 +100,7 @@ public static class MatchReplay
         {
             ReviewId = example.ReviewId, Source = example.Source, Candidates = example.Candidates,
             PersonMerged = example.PersonMerged, PersonAnimeId = example.PersonAnimeId,
-            Matches = matches, Suggestion = suggestion, Outcome = outcome
+            Matches = matches, Suggestion = suggestion, Undecided = undecided, Outcome = outcome
         };
     }
 

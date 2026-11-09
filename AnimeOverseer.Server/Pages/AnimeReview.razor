@@ -107,6 +107,7 @@
                         <div class="review-evidence">
                             <span class="review-score review-score-@confidence.ToLowerInvariant()" title="Match score for the @(item.Candidates.Count > 1 ? "top-ranked" : "shown") candidate">@confidence · @best.Score</span>
                             @if (item.Suggestion is { } suggestion) { <span class="review-suggestion" title="@suggestion.Explanation">@(_settings?.Mode == AutoDecisionMode.Apply ? "Will" : "Would") @(suggestion.Decision == "Merge" ? "auto-merge" : "auto-create")</span> }
+                            else if (item.Undecided is { } undecided) { <span class="review-undecided">@undecided</span> }
                             @foreach (var evidence in best.Evidence.Where(evidence => evidence.Kind != MatchEvidenceKind.Neutral))
                             {
                                 <span class="review-evidence-item review-evidence-@evidence.Kind.ToString().ToLowerInvariant()">@EvidenceSign(evidence) @evidence.Detail</span>

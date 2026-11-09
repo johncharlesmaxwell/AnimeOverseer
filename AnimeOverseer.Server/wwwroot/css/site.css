@@ -2716,3 +2716,4 @@ img {
 .matching-preview-actions { grid-column:1 / -1; display:flex; flex-wrap:wrap; justify-content:flex-end; gap:.4rem; }
 .matching-preview-actions button { padding:.25rem .65rem; font-size:.8rem; }
 @media (max-width: 600px) { .matching-preview-row { grid-template-columns:1fr; } .matching-preview-row .review-arrow { display:none; } }
+.review-undecided { font-size:.75rem; padding:.12rem .45rem; border-radius:4px; color:#aebbd0; border:1px dashed #3b4e6f; }

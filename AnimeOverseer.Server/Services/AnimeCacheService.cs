@@ -596,6 +596,7 @@ public class AnimeCacheService(AnimeDbContext db, AniListApiService aniList, Jik
         var reason = candidates.Count > 1
             ? "More than one title/alias candidate was found"
             : "Title or alias match needs confirmation";
+        await LoadTagsAsync(candidates, ct);
         var matches = ScoreCandidates(source, candidates, (await MatchingSettings.LoadAsync(db, ct)).Scoring, await NameUsageAsync(ct));
         // An expired snooze reopens the deferred review with the fresh import.
         var review = prior ?? new PendingAnimeReview { SeasonId = fixedSeasonId ?? await UnknownSeasonIdAsync(ct), SourceName = "Catalogue import" };
@@ -622,6 +623,21 @@ public class AnimeCacheService(AnimeDbContext db, AniListApiService aniList, Jik
     /// </summary>
     private async Task<CatalogueNameStats> NameUsageAsync(CancellationToken ct)
         => _nameStats ??= await CatalogueNameUsage.LoadAsync(db, ct);
+
+    /// <summary>
+    /// Loads genres and themes for the few candidates about to be scored. The import's
+    /// catalogue scan loads only names, since loading tags for every row would be costly.
+    /// </summary>
+    private async Task LoadTagsAsync(IEnumerable<Anime> candidates, CancellationToken ct)
+    {
+        foreach (var candidate in candidates.DistinctBy(candidate => candidate.Id))
+        {
+            var entry = db.Entry(candidate);
+            if (entry.State == EntityState.Detached) continue;
+            if (!entry.Collection(item => item.AnimeGenres).IsLoaded) await entry.Collection(item => item.AnimeGenres).Query().Include(item => item.Genre).LoadAsync(ct);
+            if (!entry.Collection(item => item.AnimeThemes).IsLoaded) await entry.Collection(item => item.AnimeThemes).Query().Include(item => item.Theme).LoadAsync(ct);
+        }
+    }
 
     private static List<CandidateMatch> ScoreCandidates(Anime source, IEnumerable<Anime> candidates, MatchScoring scoring, CatalogueNameStats nameStats)
         => candidates.DistinctBy(candidate => candidate.Id)
@@ -700,6 +716,7 @@ public class AnimeCacheService(AnimeDbContext db, AniListApiService aniList, Jik
         if (viable.Count > 0)
         {
             var settings = await MatchingSettings.LoadAsync(db, ct);
+            await LoadTagsAsync(viable, ct);
             var matches = ScoreCandidates(source, viable, settings.Scoring, await NameUsageAsync(ct));
             review.CandidateAnimeIdsJson = JsonSerializer.Serialize(viable.Select(candidate => candidate.Id));
             review.MatchScore = matches[0].Score;

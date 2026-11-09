@@ -28,10 +28,14 @@ public static class MatchScorer
         var evidence = new List<MatchEvidence>();
         AddIdEvidence(source, candidate, evidence);
         AddTitleEvidence(source, candidate, weights, nameUsage, tokenWeight, evidence);
+        AddSubtitleEvidence(source, candidate, weights, evidence);
+        AddTitleYearEvidence(source, candidate, weights, evidence);
         AddStartDateEvidence(source.StartDate, candidate.StartDate, weights, evidence);
+        AddEndDateEvidence(source, candidate, weights, evidence);
         AddTypeEvidence(source.Type, candidate.Type, weights, evidence);
         AddEpisodeEvidence(source, candidate, weights, evidence);
         AddDurationEvidence(source.Duration, candidate.Duration, weights, evidence);
+        AddGenreEvidence(source, candidate, weights, evidence);
 
         var score = Math.Clamp(evidence.Sum(item => item.Weight), 0, 100);
         if (evidence.Any(item => item.Kind == MatchEvidenceKind.HardNegative)) score = Math.Min(score, weights.HardConflictCap);
@@ -73,6 +77,34 @@ public static class MatchScorer
         return null;
     }
 
+    /// <summary>
+    /// Why <see cref="Suggest(IReadOnlyCollection{CandidateMatch}, MatchingSettings)"/> leaves these
+    /// candidates for a person, naming the rule that came closest, or null when it decides them.
+    /// </summary>
+    public static string? WhyUndecided(IReadOnlyCollection<CandidateMatch> matches, MatchingSettings settings)
+    {
+        if (Suggest(matches, settings) is not null) return null;
+        var conflictFree = matches.Where(match => !HasHardNegative(match)).OrderByDescending(match => match.Score).ToList();
+        var best = conflictFree[0];
+        var threshold = settings.MergeThreshold;
+        string reason;
+        if (best.Score < threshold)
+        {
+            reason = conflictFree.Count == 1
+                ? $"the only conflict-free candidate scored {best.Score}, {threshold - best.Score} short of the merge threshold ({threshold})"
+                : $"the best of {conflictFree.Count} conflict-free candidates scored {best.Score}, {threshold - best.Score} short of the merge threshold ({threshold})";
+            if (settings.LowScoreCreateEnabled) reason += $", but not below {settings.CreateBelowScore} to create as new";
+        }
+        else
+        {
+            var lead = best.Score - conflictFree[1].Score;
+            reason = settings.MarginMergeEnabled
+                ? $"{conflictFree.Count} candidates are conflict-free and the best leads the next by {lead}, less than the margin ({settings.MergeMargin})"
+                : $"{conflictFree.Count} candidates are conflict-free; the best reaches the threshold and leads by {lead}, but Merge a clear leader is off";
+        }
+        return $"Left for you: {reason}.";
+    }
+
     public static bool HasHardNegative(CandidateMatch match) => match.Evidence.Any(item => item.Kind == MatchEvidenceKind.HardNegative);
 
     private static void AddIdEvidence(Anime source, Anime candidate, List<MatchEvidence> evidence)
@@ -112,13 +144,16 @@ public static class MatchScorer
         var sourceNames = AllNames(source).Select(TitleNormalizer.Compact).Where(name => name.Length > 0).ToHashSet(StringComparer.Ordinal);
         var candidateNames = AllNames(candidate).Select(TitleNormalizer.Compact).Where(name => name.Length > 0).ToHashSet(StringComparer.Ordinal);
 
+        // A title several catalogue rows use (a remake, a franchise name) only tells them apart
+        // by date, so with a date missing it counts for less.
+        var mainUsage = weights.ScaleSharedMainTitles && nameUsage is not null && (source.StartDate is null || candidate.StartDate is null) ? nameUsage : null;
         if (sourceMain.Length > 0 && sourceMain == candidateMain)
-            evidence.Add(Positive("Title", "Main titles match exactly", weights.MainTitleExact));
+            evidence.Add(ExactTitleEvidence("Main titles match exactly", weights.MainTitleExact, candidateMain, mainUsage));
         else if (sourceOriginal.Length > 0 && sourceOriginal == candidateOriginal)
-            evidence.Add(Positive("Title", "Original (romaji/native) titles match exactly", weights.OriginalTitleExact));
+            evidence.Add(ExactTitleEvidence("Original (romaji/native) titles match exactly", weights.OriginalTitleExact, candidateOriginal, mainUsage));
         else if (sourceNames.Overlaps(candidateNames))
             evidence.Add(AliasEvidence(sourceNames.Intersect(candidateNames), weights, nameUsage, ""));
-        else if (weights.MatchRomajiSpellings && RomajiEvidence(source, candidate, weights, nameUsage) is { } romaji)
+        else if (weights.MatchRomajiSpellings && RomajiEvidence(source, candidate, weights, nameUsage, mainUsage) is { } romaji)
             evidence.Add(romaji);
         else
         {
@@ -144,7 +179,90 @@ public static class MatchScorer
         var candidateInstallment = TitleNormalizer.InstallmentOf(candidate.Title, candidate.OriginalTitle);
         if (sourceInstallment.ConflictsWith(candidateInstallment))
             evidence.Add(Negative("Season", $"Titles name different seasons ({sourceInstallment} vs {candidateInstallment})", -weights.SeasonMismatchPenalty));
+        // Agreeing on a later season tells a sequel from the franchise's other entries.
+        else if (sourceInstallment != Installment.First && sourceInstallment == candidateInstallment && weights.SeasonMatchBonus > 0)
+            evidence.Add(Positive("Season", $"Both titles name {sourceInstallment}", weights.SeasonMatchBonus));
     }
+
+    /// <summary>Exact main or original title points, divided by the rows sharing the title when <paramref name="usage"/> is given.</summary>
+    private static MatchEvidence ExactTitleEvidence(string detail, int points, string compactName, Func<string, int>? usage)
+    {
+        var rows = usage is null ? 1 : Math.Max(1, usage(compactName));
+        return rows > 1
+            ? Positive("Title", $"{detail}, but {rows} catalogue entries use it and a start date is missing", (int)Math.Round((double)points / rows))
+            : Positive("Title", detail, points);
+    }
+
+    /// <summary>
+    /// A penalty when the main (or original) titles share a series name but carry different
+    /// subtitles, as "Re:Zero - Memory Snow" and "Re:Zero - Frozen Bond" do. A subtitle that is
+    /// only a season label is left to the season check.
+    /// </summary>
+    private static void AddSubtitleEvidence(Anime source, Anime candidate, MatchScoring weights, List<MatchEvidence> evidence)
+    {
+        if (weights.SubtitleMismatchPenalty == 0) return;
+        var pairs = new[] { (source.Title, candidate.Title), (source.OriginalTitle, candidate.OriginalTitle) };
+        if (pairs.Any(pair => TitleNormalizer.Compact(pair.Item1) is { Length: > 0 } left && left == TitleNormalizer.Compact(pair.Item2))) return;
+        foreach (var (left, right) in pairs)
+        {
+            if (TitleNormalizer.SplitSubtitle(left) is not { } sourceParts || TitleNormalizer.SplitSubtitle(right) is not { } candidateParts) continue;
+            if (sourceParts.Series != candidateParts.Series) continue;
+            var sourceSubtitle = TitleNormalizer.Compact(TitleNormalizer.SplitSeasonSuffix(sourceParts.Subtitle).Base);
+            var candidateSubtitle = TitleNormalizer.Compact(TitleNormalizer.SplitSeasonSuffix(candidateParts.Subtitle).Base);
+            if (sourceSubtitle.Length == 0 || candidateSubtitle.Length == 0 || sourceSubtitle == candidateSubtitle) continue;
+            evidence.Add(Negative("Subtitle", $"Same series name, different subtitles (\"{sourceParts.Subtitle}\" vs \"{candidateParts.Subtitle}\")", -weights.SubtitleMismatchPenalty));
+            return;
+        }
+    }
+
+    /// <summary>
+    /// A year in a title, as in "Hunter x Hunter (2011)", is a stated start year. It is checked
+    /// against the other record's title year or start date, with the start-date year rules.
+    /// </summary>
+    private static void AddTitleYearEvidence(Anime source, Anime candidate, MatchScoring weights, List<MatchEvidence> evidence)
+    {
+        var sourceYear = TitleNormalizer.TitleYear(source.Title) ?? TitleNormalizer.TitleYear(source.OriginalTitle);
+        var candidateYear = TitleNormalizer.TitleYear(candidate.Title) ?? TitleNormalizer.TitleYear(candidate.OriginalTitle);
+        string? detail = null;
+        if (sourceYear is int left && candidateYear is int right)
+        {
+            if (Math.Abs(left - right) >= 2) detail = $"Titles name different years ({left} vs {right})";
+        }
+        else if (sourceYear is int year && candidate.StartDate is { } candidateStart && Math.Abs(year - candidateStart.Year) >= 2)
+            detail = $"Incoming title names {year} but the candidate started in {candidateStart.Year}";
+        else if (candidateYear is int named && source.StartDate is { } sourceStart && Math.Abs(named - sourceStart.Year) >= 2)
+            detail = $"Candidate title names {named} but the incoming record started in {sourceStart.Year}";
+        if (detail is null) return;
+        evidence.Add(weights.StartYearApartIsConflict ? HardNegative("Title year", detail) : Negative("Title year", detail, -weights.StartYearApartPenalty));
+    }
+
+    /// <summary>One record starting after the other has finished is a sequel or later part, not the same entry.</summary>
+    private static void AddEndDateEvidence(Anime source, Anime candidate, MatchScoring weights, List<MatchEvidence> evidence)
+    {
+        if (weights.StartsAfterEndPenalty == 0) return;
+        var grace = TimeSpan.FromDays(14);
+        if (source.StartDate is { } sourceStart && candidate.EndDate is { } candidateEnd && sourceStart > candidateEnd + grace)
+            evidence.Add(Negative("End date", $"Incoming starts after the candidate ended ({sourceStart:MMM yyyy} vs {candidateEnd:MMM yyyy})", -weights.StartsAfterEndPenalty));
+        else if (candidate.StartDate is { } candidateStart && source.EndDate is { } sourceEnd && candidateStart > sourceEnd + grace)
+            evidence.Add(Negative("End date", $"Candidate starts after the incoming ended ({candidateStart:MMM yyyy} vs {sourceEnd:MMM yyyy})", -weights.StartsAfterEndPenalty));
+    }
+
+    /// <summary>
+    /// A small penalty when both records list a few genres or themes and share none. Sequels share
+    /// them; unrelated shows with similar names usually don't.
+    /// </summary>
+    private static void AddGenreEvidence(Anime source, Anime candidate, MatchScoring weights, List<MatchEvidence> evidence)
+    {
+        if (weights.GenresDisjointPenalty == 0) return;
+        var sourceTags = Tags(source);
+        var candidateTags = Tags(candidate);
+        if (sourceTags.Count < 2 || candidateTags.Count < 2 || sourceTags.Overlaps(candidateTags)) return;
+        evidence.Add(Negative("Genres", "No genres or themes in common", -weights.GenresDisjointPenalty));
+    }
+
+    private static HashSet<string> Tags(Anime anime)
+        => anime.AnimeGenres.Select(item => item.Genre?.Name).Concat(anime.AnimeThemes.Select(item => item.Theme?.Name))
+            .Select(TitleNormalizer.Compact).Where(name => name.Length > 0).ToHashSet(StringComparer.Ordinal);
 
     /// <summary>
     /// An alias match, worth less when the shared name is used by several catalogue
@@ -161,15 +279,15 @@ public static class MatchScorer
     }
 
     /// <summary>Exact title evidence after folding romaji long vowels ("Yuuki" = "Yuki"), or null.</summary>
-    private static MatchEvidence? RomajiEvidence(Anime source, Anime candidate, MatchScoring weights, Func<string, int>? nameUsage)
+    private static MatchEvidence? RomajiEvidence(Anime source, Anime candidate, MatchScoring weights, Func<string, int>? nameUsage, Func<string, int>? mainUsage)
     {
         const string qualifier = " (ignoring long-vowel spelling)";
         var sourceMain = TitleNormalizer.RomajiKey(source.Title);
         var sourceOriginal = TitleNormalizer.RomajiKey(source.OriginalTitle);
         if (sourceMain.Length > 0 && sourceMain == TitleNormalizer.RomajiKey(candidate.Title))
-            return Positive("Title", $"Main titles match{qualifier}", weights.MainTitleExact);
+            return ExactTitleEvidence($"Main titles match{qualifier}", weights.MainTitleExact, TitleNormalizer.Compact(candidate.Title), mainUsage);
         if (sourceOriginal.Length > 0 && sourceOriginal == TitleNormalizer.RomajiKey(candidate.OriginalTitle))
-            return Positive("Title", $"Original (romaji/native) titles match{qualifier}", weights.OriginalTitleExact);
+            return ExactTitleEvidence($"Original (romaji/native) titles match{qualifier}", weights.OriginalTitleExact, TitleNormalizer.Compact(candidate.OriginalTitle), mainUsage);
         // Usage counts are kept by exact compact name, so report shared names in that form.
         var sourceByKey = AllNames(source).Select(TitleNormalizer.Compact).Where(name => name.Length > 0)
             .GroupBy(TitleNormalizer.RomajiKey).ToDictionary(group => group.Key, group => group.First(), StringComparer.Ordinal);

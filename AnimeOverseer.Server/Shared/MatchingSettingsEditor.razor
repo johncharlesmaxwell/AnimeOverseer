@@ -67,7 +67,10 @@ else
                     <label>Alternative title or alias matches <input type="number" min="0" max="100" @bind="_form.Scoring.AliasMatch" @bind:after="Changed" /></label>
                     <label title="Fully similar titles earn all of these points; partly similar titles earn a share">Similar titles (up to) <input type="number" min="0" max="100" @bind="_form.Scoring.SimilarTitleMax" @bind:after="Changed" /></label>
                     <label class="matching-penalty" title="Read from the main and original titles: Season 2, 2nd Season, S2, Part 2, Cour 2, Final Season, Zoku, Shippuden, 第2期">Titles name different seasons or parts <input type="number" min="0" max="100" @bind="_form.Scoring.SeasonMismatchPenalty" @bind:after="Changed" /></label>
+                    <label title="Both titles name the same later season or part, such as Season 2 and 2nd Season. Only sequels earn it, so it is not part of the best possible score">Titles name the same later season <input type="number" min="0" max="100" @bind="_form.Scoring.SeasonMatchBonus" @bind:after="Changed" /></label>
+                    <label class="matching-penalty" title="Same series name before a colon or dash, different subtitles after it: Title: Memory Snow vs Title: Frozen Bond">Same series name, different subtitles <input type="number" min="0" max="100" @bind="_form.Scoring.SubtitleMismatchPenalty" @bind:after="Changed" /></label>
                     <label class="matching-toggle" title="An alias used by 3 catalogue entries earns a third of the alias points"><input type="checkbox" @bind="_form.Scoring.ScaleSharedAliases" @bind:after="Changed" /> Aliases shared by several entries count for less</label>
+                    <label class="matching-toggle" title="A main title used by 2 catalogue entries, such as a remake, earns half the points when either side has no start date to tell them apart"><input type="checkbox" @bind="_form.Scoring.ScaleSharedMainTitles" @bind:after="Changed" /> Main titles shared by several entries count for less when a start date is missing</label>
                     <label class="matching-toggle" title="Yuuki, Yūki and Yuki; Toukyou and Tokyo"><input type="checkbox" @bind="_form.Scoring.MatchRomajiSpellings" @bind:after="Changed" /> Match romaji long-vowel spellings</label>
                     <label class="matching-toggle" title="When titles are only similar, sharing a word few catalogue entries use (Frieren) counts for more than sharing a common one (no, the, s2)"><input type="checkbox" @bind="_form.Scoring.WeightRareWords" @bind:after="Changed" /> Rare words count for more in similar titles</label>
                 </fieldset>
@@ -78,6 +81,7 @@ else
                     <label class="matching-penalty">Six months to a year apart <input type="number" min="0" max="100" @bind="_form.Scoring.StartUnderYearPenalty" @bind:after="Changed" /></label>
                     <label class="matching-toggle"><input type="checkbox" @bind="_form.Scoring.StartYearApartIsConflict" @bind:after="Changed" /> A year or more apart is a hard conflict</label>
                     <label class="matching-penalty">A year or more apart <input type="number" min="0" max="100" @bind="_form.Scoring.StartYearApartPenalty" @bind:after="Changed" disabled="@_form.Scoring.StartYearApartIsConflict" /></label>
+                    <label class="matching-penalty" title="One record starts more than two weeks after the other ended, as a sequel or later part does">Starts after the other ended <input type="number" min="0" max="100" @bind="_form.Scoring.StartsAfterEndPenalty" @bind:after="Changed" /></label>
                 </fieldset>
                 <fieldset>
                     <legend>Format</legend>
@@ -99,13 +103,17 @@ else
                     <label class="matching-penalty" title="15 minutes or less on one side, 20 or more on the other">Short vs full-length <input type="number" min="0" max="100" @bind="_form.Scoring.DurationDifferPenalty" @bind:after="Changed" /></label>
                 </fieldset>
                 <fieldset>
+                    <legend>Genres and themes</legend>
+                    <label class="matching-penalty" title="Both list at least two genres or themes and share none">Nothing in common <input type="number" min="0" max="100" @bind="_form.Scoring.GenresDisjointPenalty" @bind:after="Changed" /></label>
+                </fieldset>
+                <fieldset>
                     <legend>Confidence and conflicts</legend>
                     <label>High confidence from <input type="number" min="1" max="100" @bind="_form.Scoring.HighConfidence" @bind:after="Changed" /></label>
                     <label>Medium confidence from <input type="number" min="0" max="100" @bind="_form.Scoring.MediumConfidence" @bind:after="Changed" /></label>
                     <label title="Different provider IDs, a franchise relation, and the conflicts switched on above hold a score at or below this">Hard-conflict score cap <input type="number" min="0" max="100" @bind="_form.Scoring.HardConflictCap" @bind:after="Changed" /></label>
                 </fieldset>
             </div>
-            <p class="matching-note">Different AniList, MAL or Kitsu IDs and a franchise relation (sequel, prequel…) are always hard conflicts. Formats are compared after folding provider names, so TV SHORT and TV count as the same format.</p>
+            <p class="matching-note">Different AniList, MAL or Kitsu IDs and a franchise relation (sequel, prequel…) are always hard conflicts. Formats are compared after folding provider names, so TV SHORT and TV count as the same format. A year in a title, as in Hunter x Hunter (2011), is checked like a start date using the start-date year rules.</p>
             @{ var best = Current.Scoring.MaximumScore; }
             <p class="matching-note">Best possible score with these weights: <strong>@best</strong>.
                 @if (best > 100) { <span class="matching-warning">Scores are held at 100, so this leaves @(best - 100) points unused and strong matches stop being told apart. Lower some weights so they add up to 100.</span> }
@@ -329,6 +337,7 @@ else
                     }
                 }
                 @if (item.Suggestion is not null) { <span class="matching-preview-why">Because @item.Suggestion.Explanation.</span> }
+                else if (item.Undecided is not null) { <span class="matching-preview-why">@item.Undecided</span> }
             </div>
         </div>
     };
@@ -425,6 +434,7 @@ else
                     }
                 }
                 @if (suggestion is not null) { <span class="matching-preview-why">Because @suggestion.Explanation.</span> }
+                else if (item.Undecided is not null) { <span class="matching-preview-why">@item.Undecided</span> }
             </div>
             <div class="matching-preview-actions">
                 <button type="button" @onclick='() => DecideAsync(item, "Create")' disabled="@_working">Create as new</button>
@@ -500,6 +510,11 @@ else
         public bool ScaleSharedAliases { get; set; }
         public bool MatchRomajiSpellings { get; set; }
         public bool WeightRareWords { get; set; }
+        public bool ScaleSharedMainTitles { get; set; }
+        public int SubtitleMismatchPenalty { get; set; }
+        public int SeasonMatchBonus { get; set; }
+        public int StartsAfterEndPenalty { get; set; }
+        public int GenresDisjointPenalty { get; set; }
         public int StartWithinMonth { get; set; }
         public int StartWithinSixMonths { get; set; }
         public int StartUnderYearPenalty { get; set; }
@@ -524,6 +539,8 @@ else
             MainTitleExact = s.MainTitleExact, OriginalTitleExact = s.OriginalTitleExact, AliasMatch = s.AliasMatch,
             SimilarTitleMax = s.SimilarTitleMax, SeasonMismatchPenalty = s.SeasonMismatchPenalty,
             ScaleSharedAliases = s.ScaleSharedAliases, MatchRomajiSpellings = s.MatchRomajiSpellings, WeightRareWords = s.WeightRareWords,
+            ScaleSharedMainTitles = s.ScaleSharedMainTitles, SubtitleMismatchPenalty = s.SubtitleMismatchPenalty, SeasonMatchBonus = s.SeasonMatchBonus,
+            StartsAfterEndPenalty = s.StartsAfterEndPenalty, GenresDisjointPenalty = s.GenresDisjointPenalty,
             StartWithinMonth = s.StartWithinMonth, StartWithinSixMonths = s.StartWithinSixMonths, StartUnderYearPenalty = s.StartUnderYearPenalty,
             StartYearApartIsConflict = s.StartYearApartIsConflict, StartYearApartPenalty = s.StartYearApartPenalty,
             FormatSame = s.FormatSame, FormatDifferPenalty = s.FormatDifferPenalty, MovieVsSeriesIsConflict = s.MovieVsSeriesIsConflict,
@@ -538,6 +555,8 @@ else
             MainTitleExact = MainTitleExact, OriginalTitleExact = OriginalTitleExact, AliasMatch = AliasMatch,
             SimilarTitleMax = SimilarTitleMax, SeasonMismatchPenalty = SeasonMismatchPenalty,
             ScaleSharedAliases = ScaleSharedAliases, MatchRomajiSpellings = MatchRomajiSpellings, WeightRareWords = WeightRareWords,
+            ScaleSharedMainTitles = ScaleSharedMainTitles, SubtitleMismatchPenalty = SubtitleMismatchPenalty, SeasonMatchBonus = SeasonMatchBonus,
+            StartsAfterEndPenalty = StartsAfterEndPenalty, GenresDisjointPenalty = GenresDisjointPenalty,
             StartWithinMonth = StartWithinMonth, StartWithinSixMonths = StartWithinSixMonths, StartUnderYearPenalty = StartUnderYearPenalty,
             StartYearApartIsConflict = StartYearApartIsConflict, StartYearApartPenalty = StartYearApartPenalty,
             FormatSame = FormatSame, FormatDifferPenalty = FormatDifferPenalty, MovieVsSeriesIsConflict = MovieVsSeriesIsConflict,

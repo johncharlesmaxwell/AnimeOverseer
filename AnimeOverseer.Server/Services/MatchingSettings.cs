@@ -145,6 +145,18 @@ public sealed record MatchScoring
     public bool MatchRomajiSpellings { get; init; } = true;
     /// <summary>In similar-title scoring, words used by few catalogue entries count for more than common ones.</summary>
     public bool WeightRareWords { get; init; } = true;
+    /// <summary>
+    /// When start dates cannot tell candidates apart, divide exact main or original title points by the
+    /// number of catalogue rows using that title, as with shared aliases.
+    /// </summary>
+    public bool ScaleSharedMainTitles { get; init; } = true;
+    /// <summary>Both titles share a series name but carry different subtitles ("Title: Memory Snow" vs "Title: Frozen Bond").</summary>
+    public int SubtitleMismatchPenalty { get; init; } = 20;
+    /// <summary>
+    /// Both titles name the same later season or part. Not counted in <see cref="MaximumScore"/>,
+    /// since only sequels can earn it.
+    /// </summary>
+    public int SeasonMatchBonus { get; init; } = 5;
 
     // Start date.
     public int StartWithinMonth { get; init; } = 25;
@@ -153,6 +165,8 @@ public sealed record MatchScoring
     public bool StartYearApartIsConflict { get; init; } = true;
     /// <summary>Used instead of a hard conflict when <see cref="StartYearApartIsConflict"/> is off.</summary>
     public int StartYearApartPenalty { get; init; } = 30;
+    /// <summary>One record starts more than two weeks after the other ended, as a sequel or later part does.</summary>
+    public int StartsAfterEndPenalty { get; init; } = 20;
 
     // Format.
     public int FormatSame { get; init; } = 10;
@@ -174,6 +188,10 @@ public sealed record MatchScoring
     /// <summary>Applied when one side has short episodes (15 min or less) and the other full-length (20 min or more).</summary>
     public int DurationDifferPenalty { get; init; } = 10;
 
+    // Genres and themes.
+    /// <summary>Both records list at least two genres or themes and share none.</summary>
+    public int GenresDisjointPenalty { get; init; } = 10;
+
     // Bands.
     /// <summary>The highest score a candidate with a hard conflict can have, so conflicts sort last.</summary>
     public int HardConflictCap { get; init; } = 10;
@@ -188,6 +206,8 @@ public sealed record MatchScoring
         {
             MainTitleExact = Points(MainTitleExact), OriginalTitleExact = Points(OriginalTitleExact), AliasMatch = Points(AliasMatch),
             SimilarTitleMax = Points(SimilarTitleMax), SeasonMismatchPenalty = Points(SeasonMismatchPenalty),
+            SubtitleMismatchPenalty = Points(SubtitleMismatchPenalty), SeasonMatchBonus = Points(SeasonMatchBonus),
+            StartsAfterEndPenalty = Points(StartsAfterEndPenalty), GenresDisjointPenalty = Points(GenresDisjointPenalty),
             StartWithinMonth = Points(StartWithinMonth), StartWithinSixMonths = Points(StartWithinSixMonths),
             StartUnderYearPenalty = Points(StartUnderYearPenalty), StartYearApartPenalty = Points(StartYearApartPenalty),
             FormatSame = Points(FormatSame), FormatDifferPenalty = Points(FormatDifferPenalty),

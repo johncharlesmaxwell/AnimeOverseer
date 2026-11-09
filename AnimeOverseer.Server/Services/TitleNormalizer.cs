@@ -98,7 +98,7 @@ public static class TitleNormalizer
     /// and season labels in one form, so "2nd Season", "Season 2" and a trailing "II" agree.
     /// </summary>
     public static HashSet<string> Tokens(string? title)
-        => SeasonCanonical(title).Split(' ', StringSplitOptions.RemoveEmptyEntries)
+        => SeasonCanonical(WithoutTitleYear(title)).Split(' ', StringSplitOptions.RemoveEmptyEntries)
             .Select(NormalizeToken)
             .Where(token => !StopTokens.Contains(token))
             .ToHashSet(StringComparer.Ordinal);
@@ -114,6 +114,43 @@ public static class TitleNormalizer
         var union = left.Count + right.Count - shared;
         return union == 0 ? 0 : (double)shared / union;
     }
+
+    /// <summary>
+    /// The year a title names in brackets, as providers use to tell remakes apart:
+    /// "Hunter x Hunter (2011)" gives 2011. Null when there is none.
+    /// </summary>
+    public static int? TitleYear(string? title)
+    {
+        if (string.IsNullOrWhiteSpace(title)) return null;
+        var match = BracketedYear.Match(title);
+        return match.Success ? int.Parse(match.Groups[1].Value, CultureInfo.InvariantCulture) : null;
+    }
+
+    /// <summary>The title without a bracketed year, so the year is not compared as a word.</summary>
+    public static string? WithoutTitleYear(string? title)
+        => string.IsNullOrWhiteSpace(title) ? title : BracketedYear.Replace(title, " ").Trim();
+
+    private static readonly Regex BracketedYear = new(@"[\(\[]\s*((?:19|20)[0-9]{2})\s*[\)\]]", RegexOptions.CultureInvariant | RegexOptions.Compiled);
+
+    /// <summary>
+    /// Splits a title at its first ":", " - ", " – " or " — " whose left side is a real name
+    /// (at least 4 letters or digits, so "Re:Zero" is not split after "Re"). Gives the compact
+    /// series name and the raw subtitle, or null when the title has no subtitle.
+    /// </summary>
+    public static (string Series, string Subtitle)? SplitSubtitle(string? title)
+    {
+        title = WithoutTitleYear(title);
+        if (string.IsNullOrWhiteSpace(title)) return null;
+        foreach (Match separator in SubtitleSeparator.Matches(title))
+        {
+            var series = Compact(title[..separator.Index]);
+            var subtitle = title[(separator.Index + separator.Length)..].Trim();
+            if (series.Length >= 4 && Compact(subtitle).Length > 0) return (series, subtitle);
+        }
+        return null;
+    }
+
+    private static readonly Regex SubtitleSeparator = new(@":|\s[-–—]\s", RegexOptions.CultureInvariant | RegexOptions.Compiled);
 
     /// <summary>
     /// Jaccard similarity where each token counts its <paramref name="weight"/> instead of 1,

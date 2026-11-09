@@ -84,8 +84,10 @@ public class SeasonLabelTests
         var part2 = MatchScorer.Score(Anime("Orbit Season 3 Part 2", null), Anime("Orbit Season 3", null));
         var same = MatchScorer.Score(Anime("Orbit 3rd Season Part 2", null), Anime("Orbit Season 3 Cour 2", null));
 
-        Assert.Contains(part2.Evidence, evidence => evidence.Signal == "Season");
-        Assert.DoesNotContain(same.Evidence, evidence => evidence.Signal == "Season");
+        Assert.Contains(part2.Evidence, evidence => evidence.Signal == "Season" && evidence.Weight < 0);
+        // Agreeing on a later season and part earns the bonus instead of the penalty.
+        var season = Assert.Single(same.Evidence, evidence => evidence.Signal == "Season");
+        Assert.Equal(MatchScoring.Default.SeasonMatchBonus, season.Weight);
     }
 
     [Theory]

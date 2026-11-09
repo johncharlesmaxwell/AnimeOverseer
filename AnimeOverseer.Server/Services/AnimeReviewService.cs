@@ -119,7 +119,8 @@ public sealed class AnimeReviewService(AnimeDbContext db, AnimeCacheService cach
             .OrderByDescending(review => review.CreatedAt)
             .ToListAsync();
         var ids = reviews.SelectMany(review => JsonSerializer.Deserialize<List<int>>(review.CandidateAnimeIdsJson) ?? []).Distinct().ToList();
-        var anime = await db.Animes.Include(item => item.Season).Include(item => item.TitleAliases).Where(item => ids.Contains(item.Id)).ToDictionaryAsync(item => item.Id);
+        var anime = await db.Animes.Include(item => item.Season).Include(item => item.TitleAliases).Include(item => item.AnimeGenres).ThenInclude(item => item.Genre).Include(item => item.AnimeThemes).ThenInclude(item => item.Theme).AsSplitQuery()
+            .Where(item => ids.Contains(item.Id)).ToDictionaryAsync(item => item.Id);
         var settings = preview?.Normalized() ?? await MatchingSettings.LoadAsync(db);
         var nameStats = await CatalogueNameUsage.LoadAsync(db);
         return reviews.Select(review =>
@@ -128,16 +129,17 @@ public sealed class AnimeReviewService(AnimeDbContext db, AnimeCacheService cach
             var candidates = (JsonSerializer.Deserialize<List<int>>(review.CandidateAnimeIdsJson) ?? [])
                 .Where(anime.ContainsKey).Select(id => anime[id]).ToList();
             var matches = MatchesFor(incoming, candidates, settings.Scoring, nameStats);
+            // Undone reviews belong to a person; automation stops suggesting for them.
+            var automated = settings.Mode != AutoDecisionMode.Off && !review.AutoDecisionUndone;
+            var scored = candidates.Where(candidate => matches.ContainsKey(candidate.Id)).Select(candidate => matches[candidate.Id]).ToList();
             return new PendingAnimeReviewItem
             {
                 Review = review,
                 Incoming = incoming,
                 Candidates = candidates.OrderByDescending(candidate => matches.GetValueOrDefault(candidate.Id)?.Score ?? 0).ToList(),
                 Matches = matches,
-                // Undone reviews belong to a person; automation stops suggesting for them.
-                Suggestion = settings.Mode == AutoDecisionMode.Off || review.AutoDecisionUndone
-                    ? null
-                    : MatchScorer.Suggest(candidates.Where(candidate => matches.ContainsKey(candidate.Id)).Select(candidate => matches[candidate.Id]).ToList(), settings)
+                Suggestion = automated ? MatchScorer.Suggest(scored, settings) : null,
+                Undecided = automated ? MatchScorer.WhyUndecided(scored, settings) : null
             };
         })
             // Highest-confidence decisions first; reviews without a live candidate last.
@@ -178,7 +180,8 @@ public sealed class AnimeReviewService(AnimeDbContext db, AnimeCacheService cach
         var ids = candidateIds.Values.SelectMany(list => list)
             .Concat(reviews.Where(review => review.ResolvedAnimeId is not null).Select(review => review.ResolvedAnimeId!.Value))
             .Distinct().ToList();
-        var anime = await db.Animes.AsNoTracking().Include(item => item.TitleAliases).Where(item => ids.Contains(item.Id)).ToDictionaryAsync(item => item.Id);
+        var anime = await db.Animes.AsNoTracking().Include(item => item.TitleAliases).Include(item => item.AnimeGenres).ThenInclude(item => item.Genre).Include(item => item.AnimeThemes).ThenInclude(item => item.Theme).AsSplitQuery()
+            .Where(item => ids.Contains(item.Id)).ToDictionaryAsync(item => item.Id);
         var stats = await CatalogueNameUsage.LoadAsync(db);
 
         var cases = new List<MatchReplayCase>();
@@ -367,6 +370,8 @@ public sealed class PendingAnimeReviewItem
     public Dictionary<int, CandidateMatch> Matches { get; init; } = [];
     public CandidateMatch? BestMatch => Candidates.Count > 0 ? Matches.GetValueOrDefault(Candidates[0].Id) : null;
     public MatchSuggestion? Suggestion { get; init; }
+    /// <summary>When automation is on but leaves this review for a person, which rule came closest and why it didn't apply.</summary>
+    public string? Undecided { get; init; }
 }
 
 public sealed class DeferredReviewItem
