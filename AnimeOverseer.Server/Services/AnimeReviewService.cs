@@ -217,12 +217,11 @@ public sealed class AnimeReviewService(AnimeDbContext db, AnimeCacheService cach
         return new MatchReplayReport(cases, skipped);
     }
 
-    public async Task<List<AutoResolvedReviewItem>> GetAutoResolvedAsync(int take = 100)
+    public async Task<List<AutoResolvedReviewItem>> GetAutoResolvedAsync()
     {
         var reviews = await db.PendingAnimeReviews
             .Where(review => review.AutoResolved && (review.Status == "Merged" || review.Status == "Created"))
             .OrderByDescending(review => review.ResolvedAt)
-            .Take(take)
             .ToListAsync();
         var ids = reviews.Where(review => review.ResolvedAnimeId is not null).Select(review => review.ResolvedAnimeId!.Value).Distinct().ToList();
         var anime = await db.Animes.Include(item => item.Season).Where(item => ids.Contains(item.Id)).ToDictionaryAsync(item => item.Id);
@@ -263,9 +262,9 @@ public sealed class AnimeReviewService(AnimeDbContext db, AnimeCacheService cach
         return true;
     }
 
-    public async Task<List<RememberedDecisionItem>> GetRememberedDecisionsAsync(int take = 200)
+    public async Task<List<RememberedDecisionItem>> GetRememberedDecisionsAsync()
     {
-        var decisions = await db.AnimeMatchDecisions.OrderByDescending(decision => decision.DecidedAt).Take(take).ToListAsync();
+        var decisions = await db.AnimeMatchDecisions.OrderByDescending(decision => decision.DecidedAt).ToListAsync();
         var ids = decisions.Select(decision => decision.AnimeId).Distinct().ToList();
         var titles = await db.Animes.Where(anime => ids.Contains(anime.Id)).ToDictionaryAsync(anime => anime.Id, anime => anime.Title);
         // The source's own title lives only in the review that produced the decision.

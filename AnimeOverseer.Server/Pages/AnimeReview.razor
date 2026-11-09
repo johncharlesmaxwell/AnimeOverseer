@@ -13,7 +13,7 @@
 <PageTitle>Review catalogue matches - AnimeOverseer</PageTitle>
 
 <div class="review-page">
-    <div class="review-heading"><div><h1>Review catalogue matches</h1><p>Only title or alias matches are held here. Provider-ID matches continue automatically. Sorted by match score, most confident first.</p></div><div class="review-heading-actions"><button class="review-check-ids" @onclick="QueueProviderIdCheckAsync" disabled="@_queueingCheck" title="Fill missing AniList/MAL IDs from AniList, then resolve reviews whose IDs now match or rule out every candidate">Check provider IDs</button><a href="/settings" class="review-back">← Settings</a></div></div>
+    <div class="review-heading"><div><h1>Review catalogue matches</h1><p>Only title or alias matches are held here. Provider-ID matches continue automatically.</p></div><div class="review-heading-actions"><button class="review-check-ids" @onclick="QueueProviderIdCheckAsync" disabled="@_queueingCheck" title="Fill missing AniList/MAL IDs from AniList, then resolve reviews whose IDs now match or rule out every candidate">Check provider IDs</button><a href="/settings" class="review-back">← Settings</a></div></div>
     <p class="review-automation-summary">Automatic decisions: <strong>@ModeLabel(_settings?.Mode)</strong>@if (_settings is { Mode: not AutoDecisionMode.Off }) { <span> · merge threshold @_settings.MergeThreshold</span> } · <a href="/settings?tab=matching">Change in Matching settings</a></p>
     <div class="review-tabs" role="tablist">
         <button role="tab" class="@(_tab == "pending" ? "active" : "")" aria-selected="@(_tab == "pending")" @onclick='() => ShowView("pending")'>Needs review (@(_items?.Count ?? 0))</button>
@@ -28,9 +28,11 @@
         else if (_deferred.Count == 0) { <div class="review-empty"><h3>Nothing is deferred</h3><p>Deferred reviews wait here until their snooze ends; the next import of that anime after that reopens them.</p></div> }
         else
         {
-            <ReviewPager Total="_deferred.Count" Page="_page" PageSize="_pageSize" PageChanged="GoToPage" PageSizeChanged="SetPageSize" Label="Deferred review pages" />
+            <ReviewFilterBar Label="Filter deferred reviews" Filters="DeferredFilters" Sorts="DeferredSorts" Shown="_visibleDeferred.Count" Total="_deferred.Count" />
+            @if (_visibleDeferred.Count == 0) { <p class="review-muted">No deferred reviews match these filters.</p> }
+            <ReviewPager Total="_visibleDeferred.Count" Page="_page" PageSize="_pageSize" PageChanged="GoToPage" PageSizeChanged="SetPageSize" Label="Deferred review pages" />
             <div class="review-list">
-                @foreach (var item in ReviewPager.Slice(_deferred, _page, _pageSize))
+                @foreach (var item in ReviewPager.Slice(_visibleDeferred, _page, _pageSize))
                 {
                     <div class="review-row">
                         <div><h3>@item.Incoming.Title</h3><p>@FormatDate(item.Incoming.StartDate) · @SourceLinks(item.Incoming.MALId, item.Incoming.AniListId)</p></div>
@@ -48,9 +50,11 @@
         else if (_remembered.Count == 0) { <div class="review-empty"><h3>Nothing remembered yet</h3><p>Merge or create a review and the answer is kept here.</p></div> }
         else
         {
-            <ReviewPager Total="_remembered.Count" Page="_page" PageSize="_pageSize" PageChanged="GoToPage" PageSizeChanged="SetPageSize" Label="Remembered decision pages" />
+            <ReviewFilterBar Label="Filter remembered decisions" FilterLabel="Answer" Filters="RememberedFilters" SecondFilterLabel="From" SecondFilters="RememberedOriginFilters" Sorts="RememberedSorts" Shown="_visibleRemembered.Count" Total="_remembered.Count" />
+            @if (_visibleRemembered.Count == 0) { <p class="review-muted">No remembered decisions match these filters.</p> }
+            <ReviewPager Total="_visibleRemembered.Count" Page="_page" PageSize="_pageSize" PageChanged="GoToPage" PageSizeChanged="SetPageSize" Label="Remembered decision pages" />
             <div class="review-list">
-                @foreach (var item in ReviewPager.Slice(_remembered, _page, _pageSize))
+                @foreach (var item in ReviewPager.Slice(_visibleRemembered, _page, _pageSize))
                 {
                     <div class="review-row">
                         <div><h3>@(item.SourceTitle ?? "Provider record") <span class="review-decision-inline review-decision-inline-@(item.Decision.IsSameAnime ? "same" : "different")">@(item.Decision.IsSameAnime ? "is" : "is not")</span> <a href="/anime/@item.Decision.AnimeId">@item.AnimeTitle</a></h3><p>@SourceLinks(item.Decision.SourceMalId, item.Decision.SourceAniListId) · from @item.Decision.Origin.ToLowerInvariant() · @item.Decision.DecidedAt.ToLocalTime().ToString("d MMM yyyy")</p></div>
@@ -67,9 +71,11 @@
         else if (_autoResolved.Count == 0) { <div class="review-empty"><h3>No automatic decisions yet</h3><p>Reviews resolved by provider IDs or decision bands are listed here, newest first, so you can undo them.</p></div> }
         else
         {
-            <ReviewPager Total="_autoResolved.Count" Page="_page" PageSize="_pageSize" PageChanged="GoToPage" PageSizeChanged="SetPageSize" Label="Automatic decision pages" />
+            <ReviewFilterBar Label="Filter automatic decisions" FilterLabel="Decision" Filters="AutoFilters" Sorts="AutoSorts" Shown="_visibleAuto.Count" Total="_autoResolved.Count" />
+            @if (_visibleAuto.Count == 0) { <p class="review-muted">No automatic decisions match these filters.</p> }
+            <ReviewPager Total="_visibleAuto.Count" Page="_page" PageSize="_pageSize" PageChanged="GoToPage" PageSizeChanged="SetPageSize" Label="Automatic decision pages" />
             <div class="review-list">
-                @foreach (var item in ReviewPager.Slice(_autoResolved, _page, _pageSize))
+                @foreach (var item in ReviewPager.Slice(_visibleAuto, _page, _pageSize))
                 {
                     <div class="review-card review-card-static">
                         <span class="review-decision review-decision-@item.Review.Status.ToLowerInvariant()">@(item.Review.Status == "Merged" ? "Merged" : "Created")</span>
@@ -86,9 +92,11 @@
     else if (_items.Count == 0) { <div class="review-empty"><h3>Nothing needs review</h3><p>Future uncertain title matches will appear here instead of changing catalogue records.</p></div> }
     else
     {
+        <ReviewFilterBar Label="Filter the review queue" SearchPlaceholder="Search incoming and candidate titles" FilterLabel="Confidence" Filters="ConfidenceFilters" SecondFilterLabel="Automation" SecondFilters="@(_settings is { Mode: not AutoDecisionMode.Off } ? AutomationFilters : null)" Sorts="PendingSorts" Shown="_visibleItems.Count" Total="_items.Count" />
         <div class="review-toolbar"><input class="review-select-all" type="checkbox" checked="@AllSelected" @onchange="ToggleAll" aria-label="Select all review records on this page" /><strong>@_selected.Count selected</strong><span>Click to select · Shift-click selects a range · Ctrl/Cmd-click adds or removes records.</span><div class="review-toolbar-actions"><button @onclick='() => ResolveSelectedAsync("Create")' disabled="@(_selected.Count == 0 || _working)">Create as new</button><button @onclick='() => ResolveSelectedAsync("Merge")' disabled="@(!CanMergeSelection || _working)">Merge into shown match</button><button @onclick='() => ResolveSelectedAsync("Defer")' disabled="@(_selected.Count == 0 || _working)">Defer</button><button class="review-plain" @onclick="ClearSelection" disabled="@(_selected.Count == 0)">Clear</button></div></div>
         @if (!string.IsNullOrEmpty(_notice)) { <p class="review-notice">@_notice</p> }
-        <ReviewPager Total="_items.Count" Page="_page" PageSize="_pageSize" PageChanged="GoToPage" PageSizeChanged="SetPageSize" Label="Review queue pages" />
+        @if (_visibleItems.Count == 0) { <p class="review-muted">No reviews match these filters.</p> }
+        <ReviewPager Total="_visibleItems.Count" Page="_page" PageSize="_pageSize" PageChanged="GoToPage" PageSizeChanged="SetPageSize" Label="Review queue pages" />
         <div class="review-list">
             @foreach (var item in PageItems)
             {
@@ -118,7 +126,7 @@
                 </div>
             }
         </div>
-        <ReviewPager Total="_items.Count" Page="_page" PageSize="_pageSize" PageChanged="GoToPage" PageSizeChanged="SetPageSize" Label="Review queue pages" />
+        <ReviewPager Total="_visibleItems.Count" Page="_page" PageSize="_pageSize" PageChanged="GoToPage" PageSizeChanged="SetPageSize" Label="Review queue pages" />
     }
 </div>
 
@@ -149,6 +157,10 @@
         var requested = ReviewPager.QueryValue(Nav, "view")?.ToLowerInvariant();
         var view = requested is not null && Views.Contains(requested) ? requested : "pending";
         if (view != _tab) { _tab = view; await LoadViewAsync(view); }
+        var filters = (ReviewPager.QueryValue(Nav, "q"), ReviewPager.QueryValue(Nav, "show"), ReviewPager.QueryValue(Nav, "show2"), ReviewPager.QueryValue(Nav, "sort"));
+        if (filters != (_query, _show, _show2, _sort)) ClearSelection();
+        (_query, _show, _show2, _sort) = filters;
+        ApplyFilters();
         var page = ReviewPager.Clamp(ReviewPager.QueryPage(Nav), CurrentTabCount, _pageSize);
         if (page != _page) ClearSelection();
         _page = page;
@@ -163,8 +175,10 @@
             case "remembered": _remembered = await ReviewService.GetRememberedDecisionsAsync(); break;
             case "auto": _autoResolved = await ReviewService.GetAutoResolvedAsync(); break;
         }
+        ApplyFilters();
     }
-    private void ShowView(string view) => Nav.NavigateTo(Nav.GetUriWithQueryParameters(new Dictionary<string, object?> { ["view"] = view == "pending" ? null : view, ["page"] = null }));
+    // Each tab has its own filters, so switching tabs starts from an unfiltered list.
+    private void ShowView(string view) => Nav.NavigateTo(Nav.GetUriWithQueryParameters(new Dictionary<string, object?> { ["view"] = view == "pending" ? null : view, ["page"] = null, ["q"] = null, ["show"] = null, ["show2"] = null, ["sort"] = null }));
     private void NavigateToPage(int page, bool replace = false) => Nav.NavigateTo(Nav.GetUriWithQueryParameter("page", page <= 1 ? (int?)null : page), replace: replace);
     private async Task ReopenAsync(int reviewId)
     {
@@ -216,8 +230,8 @@
     private bool AllSelected => PageItems.Count > 0 && PageItems.All(item => _selected.Contains(item.Review.Id));
     private int _page = 1;
     private int _pageSize = ReviewPagingSettings.DefaultPageSize;
-    private List<PendingAnimeReviewItem> PageItems => _items is null ? [] : ReviewPager.Slice(_items, _page, _pageSize).ToList();
-    private int CurrentTabCount => _tab switch { "deferred" => _deferred?.Count ?? 0, "remembered" => _remembered?.Count ?? 0, "auto" => _autoResolved?.Count ?? 0, _ => _items?.Count ?? 0 };
+    private List<PendingAnimeReviewItem> PageItems => ReviewPager.Slice(_visibleItems, _page, _pageSize).ToList();
+    private int CurrentTabCount => _tab switch { "deferred" => _visibleDeferred.Count, "remembered" => _visibleRemembered.Count, "auto" => _visibleAuto.Count, _ => _visibleItems.Count };
     // Selection is per page, so an action never touches records the person cannot see.
     private void GoToPage(int page) => NavigateToPage(ReviewPager.Clamp(page, CurrentTabCount, _pageSize));
     private async Task SetPageSize(int size) { _pageSize = size; _page = 1; ClearSelection(); await SettingsService.SetAsync(ReviewPagingSettings.MatchesKey, size.ToString()); NavigateToPage(1, replace: true); }
@@ -256,11 +270,89 @@
     private async Task ReloadAsync()
     {
         _items = await ReviewService.GetPendingAsync();
+        ApplyFilters();
         _page = ReviewPager.Clamp(_page, CurrentTabCount, _pageSize);
         _autoResolvedCount = await ReviewService.GetAutoResolvedCountAsync();
         _deferredCount = await ReviewService.GetDeferredCountAsync();
         _rememberedCount = await ReviewService.GetRememberedDecisionCountAsync();
     }
+    // Filtering and ordering run over the loaded lists; the filter bar keeps their state in the query string.
+    private string? _query, _show, _show2, _sort;
+    private List<PendingAnimeReviewItem> _visibleItems = [];
+    private List<AutoResolvedReviewItem> _visibleAuto = [];
+    private List<DeferredReviewItem> _visibleDeferred = [];
+    private List<RememberedDecisionItem> _visibleRemembered = [];
+    private static KeyValuePair<string, string> Option(string key, string label) => new(key, label);
+    private static readonly KeyValuePair<string, string>[] ConfidenceFilters = [Option("high", "High"), Option("medium", "Medium"), Option("low", "Low"), Option("conflict", "Conflict"), Option("none", "No candidate")];
+    private static readonly KeyValuePair<string, string>[] AutomationFilters = [Option("merge", "Would auto-merge"), Option("create", "Would auto-create"), Option("person", "Left for you"), Option("undone", "Automation undone")];
+    private static readonly KeyValuePair<string, string>[] PendingSorts = [Option("score", "Best match first"), Option("score-asc", "Weakest match first"), Option("newest", "Newest queued"), Option("oldest", "Oldest queued"), Option("title", "Title A–Z"), Option("aired", "Aired, newest first"), Option("aired-asc", "Aired, oldest first")];
+    private static readonly KeyValuePair<string, string>[] AutoFilters = [Option("merged", "Merged"), Option("created", "Created")];
+    private static readonly KeyValuePair<string, string>[] AutoSorts = [Option("newest", "Newest first"), Option("oldest", "Oldest first"), Option("title", "Title A–Z")];
+    private static readonly KeyValuePair<string, string>[] DeferredFilters = [Option("snoozed", "Still snoozed"), Option("ready", "Reopens on next import")];
+    private static readonly KeyValuePair<string, string>[] DeferredSorts = [Option("soonest", "Reopens soonest"), Option("latest", "Reopens latest"), Option("title", "Title A–Z")];
+    private static readonly KeyValuePair<string, string>[] RememberedFilters = [Option("same", "Same anime"), Option("different", "Different anime")];
+    private static readonly KeyValuePair<string, string>[] RememberedOriginFilters = [Option("merge", "Merge"), Option("create", "Create"), Option("undo", "Undo")];
+    private static readonly KeyValuePair<string, string>[] RememberedSorts = [Option("newest", "Newest first"), Option("oldest", "Oldest first"), Option("title", "Catalogue title A–Z")];
+
+    private void ApplyFilters()
+    {
+        var titleOrder = StringComparer.CurrentCultureIgnoreCase;
+        var pending = (_items ?? [])
+            .Where(item => ReviewFilterBar.Matches(_query, [item.Incoming.Title, item.Incoming.OriginalTitle, .. item.Incoming.AlternativeTitles, .. item.Candidates.Select(candidate => candidate.Title), item.Review.Reason]))
+            .Where(item => _show is null || ConfidenceOf(item) == _show)
+            .Where(item => _show2 switch
+            {
+                "merge" => item.Suggestion?.Decision == "Merge",
+                "create" => item.Suggestion?.Decision == "Create",
+                "person" => item.Suggestion is null,
+                "undone" => item.Review.AutoDecisionUndone,
+                _ => true
+            });
+        _visibleItems = (_sort switch
+        {
+            "score-asc" => pending.OrderBy(item => item.BestMatch?.Score ?? -1).ThenBy(item => item.Review.CreatedAt),
+            "newest" => pending.OrderByDescending(item => item.Review.CreatedAt),
+            "oldest" => pending.OrderBy(item => item.Review.CreatedAt),
+            "title" => pending.OrderBy(item => item.Incoming.Title, titleOrder),
+            "aired" => pending.OrderByDescending(item => item.Incoming.StartDate ?? DateTime.MinValue),
+            "aired-asc" => pending.OrderBy(item => item.Incoming.StartDate ?? DateTime.MaxValue),
+            _ => pending // The service already returns best match first.
+        }).ToList();
+
+        var auto = (_autoResolved ?? [])
+            .Where(item => ReviewFilterBar.Matches(_query, item.Incoming.Title, item.Incoming.OriginalTitle, item.Resolved?.Title, item.Review.Reason))
+            .Where(item => _show switch { "merged" => item.Review.Status == "Merged", "created" => item.Review.Status == "Created", _ => true });
+        _visibleAuto = (_sort switch
+        {
+            "oldest" => auto.OrderBy(item => item.Review.ResolvedAt),
+            "title" => auto.OrderBy(item => item.Incoming.Title, titleOrder),
+            _ => auto.OrderByDescending(item => item.Review.ResolvedAt)
+        }).ToList();
+
+        var now = DateTime.UtcNow;
+        var deferred = (_deferred ?? [])
+            .Where(item => ReviewFilterBar.Matches(_query, item.Incoming.Title, item.Incoming.OriginalTitle, item.Review.Reason))
+            .Where(item => _show switch { "snoozed" => item.Review.DeferredUntil > now, "ready" => !(item.Review.DeferredUntil > now), _ => true });
+        _visibleDeferred = (_sort switch
+        {
+            "latest" => deferred.OrderByDescending(item => item.Review.DeferredUntil ?? DateTime.MinValue),
+            "title" => deferred.OrderBy(item => item.Incoming.Title, titleOrder),
+            _ => deferred.OrderBy(item => item.Review.DeferredUntil ?? DateTime.MinValue)
+        }).ToList();
+
+        var remembered = (_remembered ?? [])
+            .Where(item => ReviewFilterBar.Matches(_query, item.SourceTitle, item.AnimeTitle))
+            .Where(item => _show switch { "same" => item.Decision.IsSameAnime, "different" => !item.Decision.IsSameAnime, _ => true })
+            .Where(item => _show2 is null || string.Equals(item.Decision.Origin, _show2, StringComparison.OrdinalIgnoreCase));
+        _visibleRemembered = (_sort switch
+        {
+            "oldest" => remembered.OrderBy(item => item.Decision.DecidedAt),
+            "title" => remembered.OrderBy(item => item.AnimeTitle, titleOrder),
+            _ => remembered.OrderByDescending(item => item.Decision.DecidedAt)
+        }).ToList();
+    }
+
+    private string ConfidenceOf(PendingAnimeReviewItem item) => item.BestMatch is { } best ? MatchScorer.Confidence(best, _settings?.Scoring).ToLowerInvariant() : "none";
     private static string FormatDate(DateTime? value) => value?.ToString("MMM yyyy") ?? "Unknown date";
     private static RenderFragment SourceLinks(int? malId, int? aniListId) => builder =>
     {

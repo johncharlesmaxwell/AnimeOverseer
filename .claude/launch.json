@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "server",
+      "runtimeExecutable": "dotnet",
+      "runtimeArgs": ["run", "--project", "AnimeOverseer.Server", "--no-build", "--launch-profile", "http"],
+      "port": 5000
+    }
+  ]
+}
