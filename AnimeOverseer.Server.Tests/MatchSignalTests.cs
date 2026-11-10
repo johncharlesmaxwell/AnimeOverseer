@@ -64,8 +64,8 @@ public class MatchSignalTests
 
     [Theory]
     [InlineData(12, 14, null, MatchEvidenceKind.Neutral)]
-    [InlineData(12, 24, null, MatchEvidenceKind.Negative)]
-    [InlineData(12, 24, "Currently Airing", MatchEvidenceKind.Neutral)]
+    [InlineData(12, 30, null, MatchEvidenceKind.Negative)]
+    [InlineData(12, 30, "Currently Airing", MatchEvidenceKind.Neutral)]
     public void Episode_counts_allow_a_tolerance_and_airing_shows(int source, int candidate, string? status, MatchEvidenceKind expected)
     {
         var incoming = Anime("Orbit", "TV", source);
@@ -82,7 +82,7 @@ public class MatchSignalTests
         var incoming = Anime("Orbit", "TV", 12);
         incoming.Status = "Currently Airing";
 
-        var match = MatchScorer.Score(incoming, Anime("Orbit", "TV", 24), MatchScoring.Default with { IgnoreEpisodesWhileAiring = false });
+        var match = MatchScorer.Score(incoming, Anime("Orbit", "TV", 30), MatchScoring.Default with { IgnoreEpisodesWhileAiring = false });
 
         Assert.Equal(MatchEvidenceKind.Negative, match.Evidence.Single(evidence => evidence.Signal == "Episodes").Kind);
     }

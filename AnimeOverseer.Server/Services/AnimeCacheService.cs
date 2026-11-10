@@ -515,6 +515,7 @@ public class AnimeCacheService(AnimeDbContext db, AniListApiService aniList, Jik
                     await CompleteProviderIdsAsync(source, candidates, ct);
                     if (!TryGetByProviderIds(existing, source, out target))
                     {
+                        await CandidateRelations.AttachAsync(db, candidates, ct);
                         candidates = ViableCandidates(source, candidates);
                         if (candidates.Count > 0)
                         {
@@ -706,6 +707,7 @@ public class AnimeCacheService(AnimeDbContext db, AniListApiService aniList, Jik
                 ? PendingReviewRecheckOutcome.Merged : PendingReviewRecheckOutcome.Unchanged;
         }
 
+        await CandidateRelations.AttachAsync(db, candidates, ct);
         var viable = ViableCandidates(source, candidates);
         if (viable.Count == 0 && !review.AutoDecisionUndone)
         {

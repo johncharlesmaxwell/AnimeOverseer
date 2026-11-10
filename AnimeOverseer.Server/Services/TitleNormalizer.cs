@@ -59,11 +59,35 @@ public static class TitleNormalizer
     public static string Compact(string? title) => Normalize(title).Replace(" ", string.Empty, StringComparison.Ordinal);
 
     /// <summary>
-    /// A compact key with romaji long vowels folded, so "Yuuki", "Yūki" and "Yuki",
-    /// or "Toukyou" and "Tokyo", agree. Macrons are already removed by <see cref="Normalize"/>.
-    /// Looser than <see cref="Compact"/>: an English pair like "four"/"for" also agrees.
+    /// A compact key with romaji spelling variants folded, so "Yuuki", "Yūki" and "Yuki",
+    /// "Toukyou" and "Tokyo", "Shinbun" and "Shimbun", "Tsubasa" and "Tubasa", or "Kimi wo" and
+    /// "Kimi o" agree. Macrons are already removed by <see cref="Normalize"/>. Looser than
+    /// <see cref="Compact"/>: an English pair like "four"/"for" also agrees.
     /// </summary>
-    public static string RomajiKey(string? title) => LongVowels.Replace(Compact(title), match => match.Value[..1]);
+    public static string RomajiKey(string? title)
+        => string.Concat(Words(title).Select(FoldRomajiWord));
+
+    /// <summary>
+    /// One word with Hepburn, Kunrei and Nihon-shiki spellings brought to one form, particles
+    /// written as pronounced (wo, ha, he) folded to their written-as-heard forms, and long vowels shortened.
+    /// </summary>
+    public static string FoldRomajiWord(string word)
+    {
+        word = word switch { "wo" => "o", "ha" => "wa", "he" => "e", _ => word };
+        foreach (var (from, to) in RomajiSpellings) word = word.Replace(from, to, StringComparison.Ordinal);
+        // "n" before b, m or p is often written "m" (shimbun, sempai).
+        word = SyllabicM.Replace(word, "n$1");
+        return LongVowels.Replace(word, match => match.Value[..1]);
+    }
+
+    // Order matters: longer forms first so "tsu" is not read as "ts" + "u".
+    private static readonly (string From, string To)[] RomajiSpellings =
+    [
+        ("tsu", "tu"), ("chi", "ti"), ("ch", "ty"), ("shi", "si"), ("sh", "sy"),
+        ("dzu", "zu"), ("du", "zu"), ("ji", "zi"), ("j", "zy"), ("fu", "hu")
+    ];
+
+    private static readonly Regex SyllabicM = new("m([bmp])", RegexOptions.CultureInvariant | RegexOptions.Compiled);
 
     private static readonly Regex LongVowels = new("o[ou]|uu|aa|ii|ee", RegexOptions.CultureInvariant | RegexOptions.Compiled);
 
@@ -175,8 +199,51 @@ public static class TitleNormalizer
     /// </summary>
     public static HashSet<string> ComparisonTokens(string? title, bool foldRomaji)
         => foldRomaji
-            ? Tokens(title).Select(token => "~" + LongVowels.Replace(token, match => match.Value[..1])).ToHashSet(StringComparer.Ordinal)
+            ? Tokens(title).Select(token => "~" + FoldRomajiWord(token)).ToHashSet(StringComparer.Ordinal)
             : Tokens(title);
+
+    /// <summary>
+    /// The share of the smaller token set found in the larger, each token counting its
+    /// <paramref name="weight"/> (or 1). "Toradora!" in "Toradora! SOS" is fully contained.
+    /// </summary>
+    public static double ContainmentScore(HashSet<string> left, HashSet<string> right, Func<string, double>? weight = null)
+    {
+        var (small, large) = left.Count <= right.Count ? (left, right) : (right, left);
+        double shared = 0, total = 0;
+        foreach (var token in small)
+        {
+            var value = weight?.Invoke(token) ?? 1;
+            total += value;
+            if (large.Contains(token)) shared += value;
+        }
+        return total <= 0 ? 0 : shared / total;
+    }
+
+    /// <summary>
+    /// Dice similarity of the three-letter chunks of two compact strings, which ignores where
+    /// words break: "Dragonball Kai" and "Dragon Ball Kai" score 1. Zero when either is too short.
+    /// </summary>
+    public static double TrigramSimilarity(string left, string right)
+    {
+        if (left.Length < 3 || right.Length < 3) return 0;
+        var leftGrams = Trigrams(left);
+        var rightGrams = Trigrams(right);
+        var shared = 0;
+        foreach (var (gram, count) in leftGrams)
+            if (rightGrams.TryGetValue(gram, out var other)) shared += Math.Min(count, other);
+        return 2.0 * shared / (left.Length - 2 + right.Length - 2);
+    }
+
+    private static Dictionary<string, int> Trigrams(string text)
+    {
+        var grams = new Dictionary<string, int>(StringComparer.Ordinal);
+        for (var i = 0; i + 3 <= text.Length; i++)
+        {
+            var gram = text.Substring(i, 3);
+            grams[gram] = grams.GetValueOrDefault(gram) + 1;
+        }
+        return grams;
+    }
 
     /// <summary>
     /// The season a title names, or 1 when it names none. See <see cref="InstallmentOf(string?)"/>;

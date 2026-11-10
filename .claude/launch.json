@@ -1,0 +1,22 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "server",
+      "runtimeExecutable": "dotnet",
+      "runtimeArgs": ["run", "--project", "AnimeOverseer.Server", "--no-build", "--launch-profile", "http"],
+      "port": 5000
+    },
+    {
+      "name": "server-verify-copy",
+      "runtimeExecutable": "dotnet",
+      "runtimeArgs": ["run", "--project", "AnimeOverseer.Server", "--artifacts-path", "C:/Users/John/AppData/Local/Temp/claude/07870ae4c7e6da6e/3e9560ea-10c3-48b7-94c7-2c6d743e5a7c/scratchpad/artifacts", "--no-launch-profile"],
+      "env": {
+        "ASPNETCORE_URLS": "http://localhost:5055",
+        "ASPNETCORE_ENVIRONMENT": "Development",
+        "ConnectionStrings__DefaultConnection": "Data Source=C:/Users/John/AppData/Local/Temp/claude/07870ae4c7e6da6e/3e9560ea-10c3-48b7-94c7-2c6d743e5a7c/scratchpad/verify.db"
+      },
+      "port": 5055
+    }
+  ]
+}

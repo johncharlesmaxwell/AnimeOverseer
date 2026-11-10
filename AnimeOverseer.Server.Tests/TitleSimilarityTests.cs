@@ -13,7 +13,8 @@ public class TitleSimilarityTests
 
         var title = Assert.Single(match.Evidence, evidence => evidence.Signal == "Title");
         Assert.Equal(MatchEvidenceKind.Positive, title.Kind);
-        Assert.Equal(15, title.Weight);
+        // Every word of the shorter title is in the longer: 70% of the 30 similar-title points.
+        Assert.Equal(21, title.Weight);
     }
 
     [Fact]

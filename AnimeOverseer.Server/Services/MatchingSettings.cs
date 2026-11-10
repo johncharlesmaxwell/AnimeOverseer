@@ -157,6 +157,20 @@ public sealed record MatchScoring
     /// since only sequels can earn it.
     /// </summary>
     public int SeasonMatchBonus { get; init; } = 5;
+    /// <summary>
+    /// The main titles match exactly and the original titles agree too. Not counted in
+    /// <see cref="MaximumScore"/>, since records without an original title cannot earn it.
+    /// </summary>
+    public int TitleCorroborationBonus { get; init; } = 5;
+    /// <summary>
+    /// Percent of <see cref="SimilarTitleMax"/> earned when one title's words all appear in the other
+    /// ("Toradora!" in "Toradora! SOS"), scaled by how much is contained. 0 turns it off.
+    /// </summary>
+    public int ContainedTitleShare { get; init; } = 70;
+    /// <summary>Compare titles letter by letter when their words don't line up ("Dragonball" vs "Dragon Ball").</summary>
+    public bool CompareSpellings { get; init; } = true;
+    /// <summary>Aliases this many letters long or shorter ("AoT", "SAO") earn half the alias points. 0 turns it off.</summary>
+    public int ShortAliasLength { get; init; } = 4;
 
     // Start date.
     public int StartWithinMonth { get; init; } = 25;
@@ -167,6 +181,11 @@ public sealed record MatchScoring
     public int StartYearApartPenalty { get; init; } = 30;
     /// <summary>One record starts more than two weeks after the other ended, as a sequel or later part does.</summary>
     public int StartsAfterEndPenalty { get; init; } = 20;
+    /// <summary>
+    /// Read a date on the 1st as possibly giving only the month, and on 1 January as possibly giving
+    /// only the year, as providers fill in missing parts. Such dates are compared by their closest day.
+    /// </summary>
+    public bool DatesMayBeImprecise { get; init; } = true;
 
     // Format.
     public int FormatSame { get; init; } = 10;
@@ -180,6 +199,8 @@ public sealed record MatchScoring
     public int EpisodesDifferPenalty { get; init; } = 10;
     /// <summary>Counts this far apart (beyond one) are neutral rather than penalised.</summary>
     public int EpisodeTolerance { get; init; } = 2;
+    /// <summary>For long shows, counts within this percent of the larger count are neutral too, when that is more than <see cref="EpisodeTolerance"/>.</summary>
+    public int EpisodeTolerancePercent { get; init; } = 5;
     /// <summary>Differing counts are neutral when either show is still airing or not yet aired.</summary>
     public bool IgnoreEpisodesWhileAiring { get; init; } = true;
 
@@ -207,6 +228,8 @@ public sealed record MatchScoring
             MainTitleExact = Points(MainTitleExact), OriginalTitleExact = Points(OriginalTitleExact), AliasMatch = Points(AliasMatch),
             SimilarTitleMax = Points(SimilarTitleMax), SeasonMismatchPenalty = Points(SeasonMismatchPenalty),
             SubtitleMismatchPenalty = Points(SubtitleMismatchPenalty), SeasonMatchBonus = Points(SeasonMatchBonus),
+            TitleCorroborationBonus = Points(TitleCorroborationBonus), ContainedTitleShare = Points(ContainedTitleShare),
+            ShortAliasLength = Math.Clamp(ShortAliasLength, 0, 10), EpisodeTolerancePercent = Math.Clamp(EpisodeTolerancePercent, 0, 50),
             StartsAfterEndPenalty = Points(StartsAfterEndPenalty), GenresDisjointPenalty = Points(GenresDisjointPenalty),
             StartWithinMonth = Points(StartWithinMonth), StartWithinSixMonths = Points(StartWithinSixMonths),
             StartUnderYearPenalty = Points(StartUnderYearPenalty), StartYearApartPenalty = Points(StartYearApartPenalty),

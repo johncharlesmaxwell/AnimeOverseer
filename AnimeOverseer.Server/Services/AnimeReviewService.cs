@@ -208,6 +208,7 @@ public sealed class AnimeReviewService(AnimeDbContext db, AnimeCacheService cach
         var ids = reviews.SelectMany(review => JsonSerializer.Deserialize<List<int>>(review.CandidateAnimeIdsJson) ?? []).Distinct().ToList();
         var anime = await db.Animes.Include(item => item.Season).Include(item => item.TitleAliases).Include(item => item.AnimeGenres).ThenInclude(item => item.Genre).Include(item => item.AnimeThemes).ThenInclude(item => item.Theme).AsSplitQuery()
             .Where(item => ids.Contains(item.Id)).ToDictionaryAsync(item => item.Id);
+        await CandidateRelations.AttachAsync(db, anime.Values);
         return reviews.Select(review =>
         {
             var incoming = JsonSerializer.Deserialize<AnimeImportSnapshot>(review.PayloadJson) ?? new();
@@ -264,6 +265,7 @@ public sealed class AnimeReviewService(AnimeDbContext db, AnimeCacheService cach
         var anime = await db.Animes.AsNoTracking().Include(item => item.TitleAliases).Include(item => item.AnimeGenres).ThenInclude(item => item.Genre).Include(item => item.AnimeThemes).ThenInclude(item => item.Theme).AsSplitQuery()
             .Where(item => ids.Contains(item.Id)).ToDictionaryAsync(item => item.Id);
         var stats = await CatalogueNameUsage.LoadAsync(db);
+        await CandidateRelations.AttachAsync(db, anime.Values);
 
         var cases = new List<MatchReplayCase>();
         var skipped = new Dictionary<string, int>();
@@ -283,6 +285,7 @@ public sealed class AnimeReviewService(AnimeDbContext db, AnimeCacheService cach
                 // Without it the target already carries the incoming names and would always look like a match.
                 if (restore is null) { Skip("no pre-merge copy of the merged record was saved"); continue; }
                 var before = MatchReplay.BeforeMerge(resolved.Id, restore);
+                before.ProviderRelations = resolved.ProviderRelations;
                 candidates = candidateIds[review.Id].Select(id => id == resolved.Id ? before : anime.GetValueOrDefault(id)).OfType<Anime>().ToList();
                 added = MatchReplay.CountedNames(resolved);
                 added.ExceptWith(MatchReplay.CountedNames(before));
@@ -295,7 +298,7 @@ public sealed class AnimeReviewService(AnimeDbContext db, AnimeCacheService cach
             var example = new MatchReplayExample(review.Id, AnimeCacheService.FromSnapshot(snapshot), candidates, merged, merged ? resolved!.Id : null, added);
             cases.Add(MatchReplay.Evaluate(example, normalized, stats));
         }
-        return new MatchReplayReport(cases, skipped);
+        return new MatchReplayReport(cases, skipped, normalized);
     }
 
     /// <summary>

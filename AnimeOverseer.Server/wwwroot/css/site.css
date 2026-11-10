@@ -2716,5 +2716,15 @@ img {
 .matching-preview-actions { grid-column:1 / -1; display:flex; flex-wrap:wrap; justify-content:flex-end; gap:.4rem; }
 .matching-preview-actions button { padding:.25rem .65rem; font-size:.8rem; }
 @media (max-width: 600px) { .matching-preview-row { grid-template-columns:1fr; } .matching-preview-row .review-arrow { display:none; } }
+.matching-replay-detail { margin:.5rem 0; color:#dbe5ff; }
+.matching-replay-detail summary { cursor:pointer; color:#8fb4ff; font-size:.88rem; }
+.matching-replay-detail > :not(summary) { margin-top:.5rem; }
+.matching-replay-table { width:100%; max-width:42rem; border-collapse:collapse; font-size:.82rem; display:block; overflow-x:auto; }
+.matching-replay-table th, .matching-replay-table td { padding:.3rem .55rem; text-align:right; border-bottom:1px solid #2a3850; white-space:nowrap; }
+.matching-replay-table th:first-child, .matching-replay-table td:first-child { text-align:left; }
+.matching-replay-table th { color:#aebbd0; font-weight:600; }
+.matching-replay-table tr.active td { background:#1d1b3d; color:#edf1ff; }
+.matching-replay-table button { padding:.1rem .5rem; font-size:.75rem; }
+.matching-tally { margin:.25rem 0 .75rem 1.1rem; padding:0; font-size:.85rem; color:#cdd7ea; }
 .review-undecided { font-size:.75rem; padding:.12rem .45rem; border-radius:4px; color:#aebbd0; border:1px dashed #3b4e6f; }
 .review-filters { display:flex; flex-wrap:wrap; align-items:center; gap:.6rem 1rem; margin:0 0 1rem; font-size:.85rem; color:#aebbd0; }.review-filters label { display:flex; align-items:center; gap:.4rem; }.review-filters select,.review-filter-search { background:#101a2c; border:1px solid #3b4e6f; border-radius:5px; color:#edf1ff; padding:.35rem .5rem; }.review-filter-search { flex:1 1 16rem; min-width:0; max-width:28rem; }.review-filter-count { color:#cdd7ea; }.review-filter-clear { background:transparent; border:0; color:#8fb4ff; cursor:pointer; padding:.2rem .3rem; }.review-filter-clear:hover { text-decoration:underline; }@media (max-width: 700px) { .review-filter-search { max-width:none; flex-basis:100%; } }

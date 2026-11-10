@@ -71,8 +71,12 @@ else
                     <label class="matching-penalty" title="Same series name before a colon or dash, different subtitles after it: Title: Memory Snow vs Title: Frozen Bond">Same series name, different subtitles <input type="number" min="0" max="100" @bind="_form.Scoring.SubtitleMismatchPenalty" @bind:after="Changed" /></label>
                     <label class="matching-toggle" title="An alias used by 3 catalogue entries earns a third of the alias points"><input type="checkbox" @bind="_form.Scoring.ScaleSharedAliases" @bind:after="Changed" /> Aliases shared by several entries count for less</label>
                     <label class="matching-toggle" title="A main title used by 2 catalogue entries, such as a remake, earns half the points when either side has no start date to tell them apart"><input type="checkbox" @bind="_form.Scoring.ScaleSharedMainTitles" @bind:after="Changed" /> Main titles shared by several entries count for less when a start date is missing</label>
-                    <label class="matching-toggle" title="Yuuki, Yūki and Yuki; Toukyou and Tokyo"><input type="checkbox" @bind="_form.Scoring.MatchRomajiSpellings" @bind:after="Changed" /> Match romaji long-vowel spellings</label>
+                    <label title="The main titles match exactly and the original titles agree too. Records without an original title cannot earn it, so it is not part of the best possible score">Original titles match too <input type="number" min="0" max="100" @bind="_form.Scoring.TitleCorroborationBonus" @bind:after="Changed" /></label>
+                    <label title="When every word of one title appears in the other (Toradora! in Toradora! SOS), this percent of the similar-title points is earned, scaled by how much is contained. 0 turns it off">Title inside another, % of similar points <input type="number" min="0" max="100" @bind="_form.Scoring.ContainedTitleShare" @bind:after="Changed" /></label>
+                    <label title="An alias this many letters long or shorter, such as AoT or SAO, earns half the alias points. 0 turns it off">Short aliases count half, up to (letters) <input type="number" min="0" max="10" @bind="_form.Scoring.ShortAliasLength" @bind:after="Changed" /></label>
+                    <label class="matching-toggle" title="Yuuki, Yūki and Yuki; Toukyou and Tokyo; Shimbun and Shinbun; Tsubasa and Tubasa; Shoujo and Syojo; Kimi wo and Kimi o"><input type="checkbox" @bind="_form.Scoring.MatchRomajiSpellings" @bind:after="Changed" /> Match romaji spelling variants</label>
                     <label class="matching-toggle" title="When titles are only similar, sharing a word few catalogue entries use (Frieren) counts for more than sharing a common one (no, the, s2)"><input type="checkbox" @bind="_form.Scoring.WeightRareWords" @bind:after="Changed" /> Rare words count for more in similar titles</label>
+                    <label class="matching-toggle" title="For names of similar length, compare letters while ignoring spaces, so Dragonball Kai and Dragon Ball Kai count as similar titles"><input type="checkbox" @bind="_form.Scoring.CompareSpellings" @bind:after="Changed" /> Compare spelling when words don't line up</label>
                 </fieldset>
                 <fieldset>
                     <legend>Start date</legend>
@@ -82,18 +86,20 @@ else
                     <label class="matching-toggle"><input type="checkbox" @bind="_form.Scoring.StartYearApartIsConflict" @bind:after="Changed" /> A year or more apart is a hard conflict</label>
                     <label class="matching-penalty">A year or more apart <input type="number" min="0" max="100" @bind="_form.Scoring.StartYearApartPenalty" @bind:after="Changed" disabled="@_form.Scoring.StartYearApartIsConflict" /></label>
                     <label class="matching-penalty" title="One record starts more than two weeks after the other ended, as a sequel or later part does">Starts after the other ended <input type="number" min="0" max="100" @bind="_form.Scoring.StartsAfterEndPenalty" @bind:after="Changed" /></label>
+                    <label class="matching-toggle" title="Providers fill a missing day with the 1st and a missing month with January. Such dates are compared by their closest day, and agreeing only on a year earns at most the six-month points"><input type="checkbox" @bind="_form.Scoring.DatesMayBeImprecise" @bind:after="Changed" /> Dates on the 1st may give only the month or year</label>
                 </fieldset>
                 <fieldset>
                     <legend>Format</legend>
                     <label>Same format <input type="number" min="0" max="100" @bind="_form.Scoring.FormatSame" @bind:after="Changed" /></label>
                     <label class="matching-penalty">Different formats <input type="number" min="0" max="100" @bind="_form.Scoring.FormatDifferPenalty" @bind:after="Changed" /></label>
-                    <label class="matching-toggle"><input type="checkbox" @bind="_form.Scoring.MovieVsSeriesIsConflict" @bind:after="Changed" /> Movie vs series is a hard conflict</label>
+                    <label class="matching-toggle"><input type="checkbox" @bind="_form.Scoring.MovieVsSeriesIsConflict" @bind:after="Changed" title="Only Movie vs TV. Movie vs Special, OVA or ONA costs the different-formats penalty, since providers often disagree on short films" /> Movie vs TV series is a hard conflict</label>
                 </fieldset>
                 <fieldset>
                     <legend>Episodes</legend>
                     <label>Same episode count <input type="number" min="0" max="100" @bind="_form.Scoring.EpisodesSame" @bind:after="Changed" /></label>
                     <label>Counts differ by one <input type="number" min="0" max="100" @bind="_form.Scoring.EpisodesNearly" @bind:after="Changed" /></label>
                     <label title="Counts further apart than one but within this many are neither rewarded nor penalised">Counts within this many are neutral <input type="number" min="1" max="50" @bind="_form.Scoring.EpisodeTolerance" @bind:after="Changed" /></label>
+                    <label title="For long shows, counts within this percent of the larger count are neutral too, when that allows more than the number above. One count about twice the other, as when a provider splits the cours, is also neutral">…or within this percent <input type="number" min="0" max="50" @bind="_form.Scoring.EpisodeTolerancePercent" @bind:after="Changed" /></label>
                     <label class="matching-penalty">Counts differ by more <input type="number" min="0" max="100" @bind="_form.Scoring.EpisodesDifferPenalty" @bind:after="Changed" /></label>
                     <label class="matching-toggle"><input type="checkbox" @bind="_form.Scoring.IgnoreEpisodesWhileAiring" @bind:after="Changed" /> Ignore differing counts while either is airing</label>
                 </fieldset>
@@ -197,6 +203,52 @@ else
                                 (<button type="button" class="matching-plain" @onclick='() => ToggleReplay("conflict")'>see them</button>).</span>
                         }
                     </p>
+                    @if (_replay.Thresholds.Count > 0)
+                    {
+                        <details class="matching-replay-detail">
+                            <summary>Other merge thresholds with these weights</summary>
+                            <table class="matching-replay-table">
+                                <thead><tr><th>Threshold</th><th>Same as you</th><th>Wrong merges</th><th>Wrong creates</th><th>Left for you</th><th>Match yours</th><th></th></tr></thead>
+                                <tbody>
+                                    @foreach (var row in _replay.Thresholds)
+                                    {
+                                        <tr class="@(row.Threshold == _form.MergeThreshold ? "active" : "")">
+                                            <td>@row.Threshold@(row.IsCurrent ? " (tested)" : "")</td>
+                                            <td>@row.Agreed</td><td>@row.WrongMerges</td><td>@row.WrongCreates</td><td>@row.Abstained</td>
+                                            <td>@(row.Precision?.ToString("P0") ?? "–")</td>
+                                            <td>@if (row.Threshold != _form.MergeThreshold) { <button type="button" class="matching-plain" @onclick="() => UseThreshold(row.Threshold)">Use</button> }</td>
+                                        </tr>
+                                    }
+                                </tbody>
+                            </table>
+                        </details>
+                    }
+                    @if (_replay.PenaltiesOnYourMerges.Count > 0 || _replay.PointsBehindWrongMerges.Count > 0)
+                    {
+                        <details class="matching-replay-detail">
+                            <summary>Which signals disagree with you</summary>
+                            @if (_replay.PenaltiesOnYourMerges.Count > 0)
+                            {
+                                <p class="matching-note">Penalties on the rows you merged into. A signal that often costs your real matches points may be too strict:</p>
+                                <ul class="matching-tally">
+                                    @foreach (var tally in _replay.PenaltiesOnYourMerges)
+                                    {
+                                        <li><strong>@tally.Signal</strong> in @tally.Count merge@(tally.Count == 1 ? "" : "s")@(tally.Points != 0 ? $", {tally.Points} points in all" : "")@(tally.Conflicts > 0 ? $", {tally.Conflicts} as a hard conflict" : "")</li>
+                                    }
+                                </ul>
+                            }
+                            @if (_replay.PointsBehindWrongMerges.Count > 0)
+                            {
+                                <p class="matching-note">Points behind the wrong merges. A signal that often lifts the wrong row may be too generous:</p>
+                                <ul class="matching-tally">
+                                    @foreach (var tally in _replay.PointsBehindWrongMerges)
+                                    {
+                                        <li><strong>@tally.Signal</strong> in @tally.Count wrong merge@(tally.Count == 1 ? "" : "s"), +@tally.Points points in all</li>
+                                    }
+                                </ul>
+                            }
+                        </details>
+                    }
                     @if (_replay.Skipped.Count > 0)
                     {
                         <p class="matching-note">Not tested: @string.Join("; ", _replay.Skipped.Select(pair => $"{pair.Value} because {pair.Key}")).</p>
@@ -271,6 +323,13 @@ else
         _replay = await ReviewService.ReplayDecisionsAsync(Current);
         _replayStale = false;
         _working = false;
+    }
+
+    private void UseThreshold(int threshold)
+    {
+        _form!.MergeThreshold = threshold;
+        Changed();
+        _notice = $"Merge threshold set to {threshold} — press Save to keep it.";
     }
 
     private void ToggleReplay(string key)
@@ -515,6 +574,12 @@ else
         public int SeasonMatchBonus { get; set; }
         public int StartsAfterEndPenalty { get; set; }
         public int GenresDisjointPenalty { get; set; }
+        public int TitleCorroborationBonus { get; set; }
+        public int ContainedTitleShare { get; set; }
+        public bool CompareSpellings { get; set; }
+        public int ShortAliasLength { get; set; }
+        public bool DatesMayBeImprecise { get; set; }
+        public int EpisodeTolerancePercent { get; set; }
         public int StartWithinMonth { get; set; }
         public int StartWithinSixMonths { get; set; }
         public int StartUnderYearPenalty { get; set; }
@@ -541,6 +606,8 @@ else
             ScaleSharedAliases = s.ScaleSharedAliases, MatchRomajiSpellings = s.MatchRomajiSpellings, WeightRareWords = s.WeightRareWords,
             ScaleSharedMainTitles = s.ScaleSharedMainTitles, SubtitleMismatchPenalty = s.SubtitleMismatchPenalty, SeasonMatchBonus = s.SeasonMatchBonus,
             StartsAfterEndPenalty = s.StartsAfterEndPenalty, GenresDisjointPenalty = s.GenresDisjointPenalty,
+            TitleCorroborationBonus = s.TitleCorroborationBonus, ContainedTitleShare = s.ContainedTitleShare, CompareSpellings = s.CompareSpellings,
+            ShortAliasLength = s.ShortAliasLength, DatesMayBeImprecise = s.DatesMayBeImprecise, EpisodeTolerancePercent = s.EpisodeTolerancePercent,
             StartWithinMonth = s.StartWithinMonth, StartWithinSixMonths = s.StartWithinSixMonths, StartUnderYearPenalty = s.StartUnderYearPenalty,
             StartYearApartIsConflict = s.StartYearApartIsConflict, StartYearApartPenalty = s.StartYearApartPenalty,
             FormatSame = s.FormatSame, FormatDifferPenalty = s.FormatDifferPenalty, MovieVsSeriesIsConflict = s.MovieVsSeriesIsConflict,
@@ -557,6 +624,8 @@ else
             ScaleSharedAliases = ScaleSharedAliases, MatchRomajiSpellings = MatchRomajiSpellings, WeightRareWords = WeightRareWords,
             ScaleSharedMainTitles = ScaleSharedMainTitles, SubtitleMismatchPenalty = SubtitleMismatchPenalty, SeasonMatchBonus = SeasonMatchBonus,
             StartsAfterEndPenalty = StartsAfterEndPenalty, GenresDisjointPenalty = GenresDisjointPenalty,
+            TitleCorroborationBonus = TitleCorroborationBonus, ContainedTitleShare = ContainedTitleShare, CompareSpellings = CompareSpellings,
+            ShortAliasLength = ShortAliasLength, DatesMayBeImprecise = DatesMayBeImprecise, EpisodeTolerancePercent = EpisodeTolerancePercent,
             StartWithinMonth = StartWithinMonth, StartWithinSixMonths = StartWithinSixMonths, StartUnderYearPenalty = StartUnderYearPenalty,
             StartYearApartIsConflict = StartYearApartIsConflict, StartYearApartPenalty = StartYearApartPenalty,
             FormatSame = FormatSame, FormatDifferPenalty = FormatDifferPenalty, MovieVsSeriesIsConflict = MovieVsSeriesIsConflict,

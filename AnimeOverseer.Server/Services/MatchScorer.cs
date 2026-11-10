@@ -117,6 +117,9 @@ public static class MatchScorer
             evidence.Add(HardNegative("Kitsu ID", $"Different Kitsu IDs ({source.KitsuId} vs {candidate.KitsuId})"));
         if (RelationTo(source, candidate) is { } relation)
             evidence.Add(HardNegative("Relation", $"Incoming lists this as its {relation.RelationType.Replace('_', ' ').ToLowerInvariant()}"));
+        // The same link seen from the catalogue's side: the candidate's provider lists the incoming record.
+        else if (RelationTo(candidate, source) is { } reverse)
+            evidence.Add(HardNegative("Relation", $"The candidate lists the incoming record as its {reverse.RelationType.Replace('_', ' ').ToLowerInvariant()}"));
     }
 
     /// <summary>True when both records carry a Kitsu ID and the IDs differ.</summary>
@@ -124,7 +127,7 @@ public static class MatchScorer
         => source.KitsuId is > 0 && candidate.KitsuId is > 0 && source.KitsuId != candidate.KitsuId;
 
     /// <summary>True when the source's provider lists the candidate as a separate franchise entry.</summary>
-    public static bool IsRelated(Anime source, Anime candidate) => RelationTo(source, candidate) is not null;
+    public static bool IsRelated(Anime source, Anime candidate) => RelationTo(source, candidate) is not null || RelationTo(candidate, source) is not null;
 
     private static ProviderRelation? RelationTo(Anime source, Anime candidate)
         => source.ProviderRelations.FirstOrDefault(relation =>
@@ -159,18 +162,14 @@ public static class MatchScorer
         {
             // One-word titles count too: "Toradora!" against "Toradora! SOS" is half similar,
             // where requiring two words left it with nothing.
-            var fold = weights.MatchRomajiSpellings;
-            var weigh = weights.WeightRareWords ? tokenWeight : null;
-            var candidateSets = AllNames(candidate).Select(name => TitleNormalizer.ComparisonTokens(name, fold)).Where(tokens => tokens.Count > 0).ToList();
-            var similarity = AllNames(source).Select(name => TitleNormalizer.ComparisonTokens(name, fold)).Where(tokens => tokens.Count > 0)
-                .SelectMany(left => candidateSets.Select(right => weigh is null
-                    ? TitleNormalizer.TokenScore(left, right)
-                    : TitleNormalizer.WeightedTokenScore(left, right, weigh)))
-                .DefaultIfEmpty(0).Max();
-            evidence.Add(similarity > 0
-                ? Positive("Title", $"Titles are {similarity:P0} similar{(weigh is null ? "" : " (rare words count for more)")}", (int)Math.Round(weights.SimilarTitleMax * similarity))
-                : Negative("Title", "No shared title words", 0));
+            evidence.Add(SimilarTitleEvidence(source, candidate, weights, tokenWeight));
         }
+
+        // The main titles match and the original titles agree as well: more than one name says so.
+        if (weights.TitleCorroborationBonus > 0 && sourceMain.Length > 0 && sourceMain == candidateMain &&
+            sourceOriginal.Length > 0 && sourceOriginal != sourceMain &&
+            (sourceOriginal == candidateOriginal || (weights.MatchRomajiSpellings && TitleNormalizer.RomajiKey(source.OriginalTitle) == TitleNormalizer.RomajiKey(candidate.OriginalTitle))))
+            evidence.Add(Positive("Title", "Original titles match too", weights.TitleCorroborationBonus));
 
         // Franchise synonyms often attach a season-one name to a later season. Compare
         // the seasons and parts the main and original titles name, since aliases rarely
@@ -182,6 +181,60 @@ public static class MatchScorer
         // Agreeing on a later season tells a sequel from the franchise's other entries.
         else if (sourceInstallment != Installment.First && sourceInstallment == candidateInstallment && weights.SeasonMatchBonus > 0)
             evidence.Add(Positive("Season", $"Both titles name {sourceInstallment}", weights.SeasonMatchBonus));
+    }
+
+    /// <summary>
+    /// A share of the similar-title points for titles that only partly agree. The best of three
+    /// readings across every pair of names counts: shared words over all words (Jaccard); one title's
+    /// words all found in the other, at <see cref="MatchScoring.ContainedTitleShare"/>; and, for names
+    /// of similar length, letter-by-letter spelling, which ignores where words break.
+    /// </summary>
+    private static MatchEvidence SimilarTitleEvidence(Anime source, Anime candidate, MatchScoring weights, Func<string, double>? tokenWeight)
+    {
+        // One-word titles count too: "Toradora!" against "Toradora! SOS" is half similar,
+        // where requiring two words left it with nothing.
+        var fold = weights.MatchRomajiSpellings;
+        var weigh = weights.WeightRareWords ? tokenWeight : null;
+        var containedShare = weights.ContainedTitleShare / 100.0;
+        var candidateSets = AllNames(candidate).Select(name => TitleNormalizer.ComparisonTokens(name, fold)).Where(tokens => tokens.Count > 0).ToList();
+        double best = 0;
+        var how = "";
+        foreach (var left in AllNames(source).Select(name => TitleNormalizer.ComparisonTokens(name, fold)).Where(tokens => tokens.Count > 0))
+            foreach (var right in candidateSets)
+            {
+                var jaccard = weigh is null ? TitleNormalizer.TokenScore(left, right) : TitleNormalizer.WeightedTokenScore(left, right, weigh);
+                if (jaccard > best) { best = jaccard; how = "similar"; }
+                if (containedShare > 0 && left.Count != right.Count)
+                {
+                    var contained = TitleNormalizer.ContainmentScore(left, right, weigh) * containedShare;
+                    if (contained > best) { best = contained; how = "contained"; }
+                }
+            }
+
+        if (weights.CompareSpellings)
+        {
+            var key = fold ? (Func<string, string>)TitleNormalizer.RomajiKey : TitleNormalizer.Compact;
+            var candidateKeys = AllNames(candidate).Select(name => key(TitleNormalizer.SeasonCanonical(TitleNormalizer.WithoutTitleYear(name)))).Where(name => name.Length >= 6).ToList();
+            foreach (var left in AllNames(source).Select(name => key(TitleNormalizer.SeasonCanonical(TitleNormalizer.WithoutTitleYear(name)))).Where(name => name.Length >= 6))
+                foreach (var right in candidateKeys)
+                {
+                    // Only names of similar length: this is for spelling, not for one name inside another.
+                    if (Math.Min(left.Length, right.Length) < 0.8 * Math.Max(left.Length, right.Length)) continue;
+                    var spelling = TitleNormalizer.TrigramSimilarity(left, right);
+                    // Below 0.6 shared letter runs are mostly coincidence.
+                    if (spelling >= 0.6 && spelling > best) { best = spelling; how = "spelling"; }
+                }
+        }
+
+        if (best <= 0) return Negative("Title", "No shared title words", 0);
+        var detail = how switch
+        {
+            "contained" => $"{best / containedShare:P0} of the shorter title's words appear in the other (counted at {weights.ContainedTitleShare}%)",
+            "spelling" => $"Titles are spelled {best:P0} alike, ignoring spaces",
+            _ => $"Titles are {best:P0} similar{(weigh is null ? "" : " (rare words count for more)")}"
+        };
+        if (how == "contained" && weigh is not null) detail += " (rare words count for more)";
+        return Positive("Title", detail, (int)Math.Round(weights.SimilarTitleMax * best));
     }
 
     /// <summary>Exact main or original title points, divided by the rows sharing the title when <paramref name="usage"/> is given.</summary>
@@ -241,10 +294,34 @@ public static class MatchScorer
     {
         if (weights.StartsAfterEndPenalty == 0) return;
         var grace = TimeSpan.FromDays(14);
-        if (source.StartDate is { } sourceStart && candidate.EndDate is { } candidateEnd && sourceStart > candidateEnd + grace)
+        // Imprecise dates are read at their most forgiving: the earliest start, the latest end.
+        bool After(DateTime start, DateTime end) => DateSpan.Of(start, weights.DatesMayBeImprecise).Earliest > DateSpan.Of(end, weights.DatesMayBeImprecise).Latest + grace;
+        if (source.StartDate is { } sourceStart && candidate.EndDate is { } candidateEnd && After(sourceStart, candidateEnd))
             evidence.Add(Negative("End date", $"Incoming starts after the candidate ended ({sourceStart:MMM yyyy} vs {candidateEnd:MMM yyyy})", -weights.StartsAfterEndPenalty));
-        else if (candidate.StartDate is { } candidateStart && source.EndDate is { } sourceEnd && candidateStart > sourceEnd + grace)
+        else if (candidate.StartDate is { } candidateStart && source.EndDate is { } sourceEnd && After(candidateStart, sourceEnd))
             evidence.Add(Negative("End date", $"Candidate starts after the incoming ended ({candidateStart:MMM yyyy} vs {sourceEnd:MMM yyyy})", -weights.StartsAfterEndPenalty));
+    }
+
+    /// <summary>
+    /// The days a date could stand for. Providers fill a missing day with the 1st and a missing
+    /// month with January, so with <paramref name="imprecise"/> a date on the 1st covers its month
+    /// and 1 January covers its year.
+    /// </summary>
+    private readonly record struct DateSpan(DateTime Date, DateTime Earliest, DateTime Latest, string? Precision)
+    {
+        public static DateSpan Of(DateTime date, bool imprecise)
+        {
+            var day = date.Date;
+            if (!imprecise || day.Day != 1) return new(day, day, day, null);
+            return day.Month == 1
+                ? new(day, day, new DateTime(day.Year, 12, 31), "year")
+                : new(day, day, new DateTime(day.Year, day.Month, DateTime.DaysInMonth(day.Year, day.Month)), "month");
+        }
+
+        public double ClosestDays(DateSpan other)
+            => Latest < other.Earliest ? (other.Earliest - Latest).TotalDays
+                : other.Latest < Earliest ? (Earliest - other.Latest).TotalDays
+                : 0;
     }
 
     /// <summary>
@@ -270,12 +347,20 @@ public static class MatchScorer
     /// </summary>
     private static MatchEvidence AliasEvidence(IEnumerable<string> sharedNames, MatchScoring weights, Func<string, int>? nameUsage, string qualifier)
     {
-        var usage = weights.ScaleSharedAliases && nameUsage is not null
-            ? sharedNames.Select(name => Math.Max(1, nameUsage(name))).DefaultIfEmpty(1).Min()
-            : 1;
-        return usage > 1
-            ? Positive("Title", $"Matched through an alias{qualifier} shared by {usage} catalogue entries", (int)Math.Round((double)weights.AliasMatch / usage))
-            : Positive("Title", $"Matched through an alternative title or alias{qualifier}", weights.AliasMatch);
+        // Each shared name is worth the alias points, divided by the rows using it and halved
+        // when it is only an abbreviation ("AoT", "SAO"); the best one decides.
+        var best = sharedNames.DefaultIfEmpty("").Select(name =>
+        {
+            var usage = weights.ScaleSharedAliases && nameUsage is not null && name.Length > 0 ? Math.Max(1, nameUsage(name)) : 1;
+            var isShort = weights.ShortAliasLength > 0 && name.Length > 0 && name.Length <= weights.ShortAliasLength;
+            var points = (double)weights.AliasMatch / usage / (isShort ? 2 : 1);
+            return (Name: name, Usage: usage, Short: isShort, Points: (int)Math.Round(points));
+        }).OrderByDescending(item => item.Points).ThenBy(item => item.Usage).First();
+        var detail = best.Usage > 1
+            ? $"Matched through an alias{qualifier} shared by {best.Usage} catalogue entries"
+            : $"Matched through an alternative title or alias{qualifier}";
+        if (best.Short) detail += $", but it is only {best.Name.Length} letters, so it counts half";
+        return Positive("Title", detail, best.Points);
     }
 
     /// <summary>Exact title evidence after folding romaji long vowels ("Yuuki" = "Yuki"), or null.</summary>
@@ -304,6 +389,21 @@ public static class MatchScorer
             return;
         }
         var days = Math.Abs((source.Value - candidate.Value).TotalDays);
+        var sourceSpan = DateSpan.Of(source.Value, weights.DatesMayBeImprecise);
+        var candidateSpan = DateSpan.Of(candidate.Value, weights.DatesMayBeImprecise);
+        var closest = sourceSpan.ClosestDays(candidateSpan);
+        if (closest < days && days > 31)
+        {
+            // A date on the 1st may only give the month (or, on 1 January, the year), so it
+            // is compared by its closest day. Agreeing on a year alone earns no more than six months.
+            var vague = new[] { sourceSpan, candidateSpan }.Where(span => span.Precision is not null).OrderByDescending(span => span.Precision == "year").First();
+            var note = $"{vague.Date:MMM yyyy} may give only the {vague.Precision}";
+            var yearOnly = vague.Precision == "year";
+            if (closest <= 31 && !yearOnly) evidence.Add(Positive("Start date", $"Start dates agree to the month ({note})", weights.StartWithinMonth));
+            else if (closest <= 183) evidence.Add(Positive("Start date", closest == 0 ? $"Start dates agree to the year ({note})" : $"Start dates about {Math.Max(1, closest / 30):0} months apart ({note})", weights.StartWithinSixMonths));
+            else days = closest;
+            if (closest <= 183) return;
+        }
         if (days <= 31) evidence.Add(Positive("Start date", "Start dates within a month", weights.StartWithinMonth));
         else if (days <= 183) evidence.Add(Positive("Start date", $"Start dates {days / 30:0} months apart", weights.StartWithinSixMonths));
         else if (days < 365) evidence.Add(Negative("Start date", $"Start dates {days / 30:0} months apart", -weights.StartUnderYearPenalty));
@@ -327,8 +427,10 @@ public static class MatchScorer
             evidence.Add(Positive("Format", string.Equals(source.Trim(), candidate.Trim(), StringComparison.OrdinalIgnoreCase)
                 ? $"Both are {sourceFormat}"
                 : $"Both are {sourceFormat} ({source.Trim()} vs {candidate.Trim()})", weights.FormatSame));
-        else if (weights.MovieVsSeriesIsConflict && IsMovie(sourceFormat) != IsMovie(candidateFormat))
-            evidence.Add(HardNegative("Format", $"Movie vs series ({source.Trim()} vs {candidate.Trim()})"));
+        // Only movie vs TV series: providers often disagree whether a short film is a Movie, a
+        // Special or an OVA, so those differences cost the ordinary format penalty.
+        else if (weights.MovieVsSeriesIsConflict && IsMovieVsTv(sourceFormat, candidateFormat))
+            evidence.Add(HardNegative("Format", $"Movie vs TV series ({source.Trim()} vs {candidate.Trim()})"));
         else
             evidence.Add(Negative("Format", $"Formats differ ({source.Trim()} vs {candidate.Trim()})", -weights.FormatDifferPenalty));
     }
@@ -349,9 +451,22 @@ public static class MatchScorer
         // whether a recap or special counts, so small or in-progress gaps prove little.
         else if (weights.IgnoreEpisodesWhileAiring && (TitleNormalizer.IsUnfinished(sourceAnime.Status) || TitleNormalizer.IsUnfinished(candidateAnime.Status)))
             evidence.Add(Neutral("Episodes", $"Episode counts differ but one is still airing ({source} vs {candidate})"));
-        else if (difference <= weights.EpisodeTolerance)
+        else if (difference <= EpisodeTolerance(source.Value, candidate.Value, weights))
             evidence.Add(Neutral("Episodes", $"Episode counts close ({source} vs {candidate})"));
+        // One provider may list a split-cour show as one entry and another as two halves.
+        else if (IsSplitCour(source.Value, candidate.Value, weights))
+            evidence.Add(Neutral("Episodes", $"One count is about twice the other, as when one provider splits the cours ({source} vs {candidate})"));
         else evidence.Add(Negative("Episodes", $"Episode counts differ ({source} vs {candidate})", -weights.EpisodesDifferPenalty));
+    }
+
+    /// <summary>The larger of the fixed tolerance and the percent of the larger count, so long shows get room.</summary>
+    private static int EpisodeTolerance(int left, int right, MatchScoring weights)
+        => Math.Max(weights.EpisodeTolerance, (int)Math.Round(Math.Max(left, right) * weights.EpisodeTolerancePercent / 100.0));
+
+    private static bool IsSplitCour(int left, int right, MatchScoring weights)
+    {
+        int shorter = Math.Min(left, right), longer = Math.Max(left, right);
+        return shorter >= 6 && Math.Abs(longer - 2 * shorter) <= EpisodeTolerance(longer, 2 * shorter, weights);
     }
 
     private static void AddDurationEvidence(int? source, int? candidate, MatchScoring weights, List<MatchEvidence> evidence)
@@ -370,7 +485,11 @@ public static class MatchScorer
             evidence.Add(Neutral("Length", $"Episode lengths differ ({source} vs {candidate} min)"));
     }
 
-    private static bool IsMovie(string format) => format.Equals("Movie", StringComparison.OrdinalIgnoreCase);
+    private static bool IsMovieVsTv(string left, string right)
+    {
+        static bool Is(string format, string name) => format.Equals(name, StringComparison.OrdinalIgnoreCase);
+        return (Is(left, "Movie") && Is(right, "TV")) || (Is(left, "TV") && Is(right, "Movie"));
+    }
 
     private static IEnumerable<string> AllNames(Anime anime)
         => new[] { anime.Title, anime.OriginalTitle }.Concat(anime.AlternativeTitles).Concat(anime.TitleAliases.Select(alias => alias.Title))
