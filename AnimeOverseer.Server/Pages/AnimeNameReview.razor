@@ -54,7 +54,7 @@
         @if (_visible.Count == 0) { <p class="review-muted">No records match these filters.</p> }
         <ReviewPager Total="_visible.Count" Page="_page" PageSize="_pageSize" PageChanged="GoToPage" PageSizeChanged="SetPageSize" Label="Name review pages" />
         <div class="name-review-list">
-            @foreach (var item in ReviewPager.Slice(_visible, _page, _pageSize))
+            @foreach (var item in _pageItems)
             {
                 <article class="name-review-card">
                     <a href="/anime/@item.Anime.Id" class="name-review-poster" title="Open @NameOf(item.Anime)">
@@ -135,19 +135,34 @@
         _precheck = await ReviewService.GetEnglishNameSettingsAsync();
         _pageSize = ReviewPagingSettings.Read(await SettingsService.GetAsync(ReviewPagingSettings.NamesKey));
         await ReloadAsync();
-        ApplyLocation();
+        await ApplyLocationAsync();
         Nav.LocationChanged += OnLocationChanged;
     }
     private int _page = 1;
     private int _pageSize = ReviewPagingSettings.DefaultPageSize;
+    // The whole list holds names only (no images or season), so it stays cheap for thousands of
+    // records; the full records are loaded just for the page on screen.
     private async Task ReloadAsync()
     {
         _items = await ReviewService.GetNamesPendingReviewAsync();
+        await RefreshPageAsync(_page);
+    }
+    private async Task RefreshPageAsync(int page)
+    {
         ApplyFilters();
-        _page = ReviewPager.Clamp(_page, _visible.Count, _pageSize);
+        _page = ReviewPager.Clamp(page, _visible.Count, _pageSize);
+        _pageItems = await ReviewService.LoadNameReviewPageAsync(ReviewPager.Slice(_visible, _page, _pageSize).ToList());
+    }
+    /// <summary>Drops a record that has just been named, without reloading and re-checking the whole list.</summary>
+    private async Task RemoveAsync(int animeId, bool named)
+    {
+        if (!named || _items is null) return;
+        _items.RemoveAll(item => item.Anime.Id == animeId);
+        await RefreshPageAsync(_page);
     }
     // Filtering and ordering run over the loaded list; the filter bar keeps their state in the query string.
     private List<AnimeNameReviewItem> _visible = [];
+    private List<AnimeNameReviewItem> _pageItems = [];
     private static KeyValuePair<string, string> Option(string key, string label) => new(key, label);
     private static readonly KeyValuePair<string, string>[] NameFilters = [Option("english", "Sources give another English name"), Option("confirmed", "Current name backed by a source"), Option("missing", "No English name yet"), Option("unsourced", "No English name from sources")];
     private static readonly KeyValuePair<string, string>[] NameSorts = [Option("title", "Title A–Z"), Option("title-desc", "Title Z–A"), Option("aired", "Aired, newest first"), Option("aired-asc", "Aired, oldest first"), Option("options", "Most names to choose from")];
@@ -178,15 +193,15 @@
     }
     // The page lives in the query string (?page=2) so browser back/forward walks through pages.
     // Read from NavigationManager rather than [SupplyParameterFromQuery]; see AnimeReview for why.
-    private void ApplyLocation() { ApplyFilters(); _page = ReviewPager.Clamp(ReviewPager.QueryPage(Nav), _visible.Count, _pageSize); }
-    private void OnLocationChanged(object? sender, LocationChangedEventArgs args) => _ = InvokeAsync(() => { ApplyLocation(); StateHasChanged(); });
+    private Task ApplyLocationAsync() => RefreshPageAsync(ReviewPager.QueryPage(Nav));
+    private void OnLocationChanged(object? sender, LocationChangedEventArgs args) => _ = InvokeAsync(async () => { await ApplyLocationAsync(); StateHasChanged(); });
     public void Dispose() => Nav.LocationChanged -= OnLocationChanged;
     private void NavigateToPage(int page, bool replace = false) => Nav.NavigateTo(Nav.GetUriWithQueryParameter("page", page <= 1 ? (int?)null : page), replace: replace);
     private void GoToPage(int page) => NavigateToPage(ReviewPager.Clamp(page, _visible.Count, _pageSize));
     private async Task SetPageSize(int size) { _pageSize = size; _page = 1; await SettingsService.SetAsync(ReviewPagingSettings.NamesKey, size.ToString()); NavigateToPage(1, replace: true); }
-    private async Task SelectNameAsync(int animeId, string name) { await ReviewService.SetMainEnglishTitleAsync(animeId, name); await ReloadAsync(); }
+    private async Task SelectNameAsync(int animeId, string name) => await RemoveAsync(animeId, await ReviewService.SetMainEnglishTitleAsync(animeId, name));
     private static string NameOf(AnimeOverseer.Server.Models.Anime anime) => string.IsNullOrWhiteSpace(anime.Title) ? anime.OriginalTitle ?? "record" : anime.Title;
-    private async Task ConfirmCurrentAsync(int animeId) { await ReviewService.ConfirmCurrentTitleAsync(animeId); await ReloadAsync(); }
+    private async Task ConfirmCurrentAsync(int animeId) => await RemoveAsync(animeId, await ReviewService.ConfirmCurrentTitleAsync(animeId));
     private string CustomName(int animeId) => _customNames.GetValueOrDefault(animeId, string.Empty);
     private void SetCustomName(int animeId, string? name) => _customNames[animeId] = name ?? string.Empty;
     private static string SourceLabel(string source) => source == "MyAnimeList" ? "MAL" : source;
@@ -218,5 +233,5 @@
         }
         finally { _running = false; }
     }
-    private async Task SelectCustomNameAsync(int animeId) { var name = CustomName(animeId); if (string.IsNullOrWhiteSpace(name)) return; await ReviewService.SetMainEnglishTitleAsync(animeId, name, allowCustom: true); await ReloadAsync(); }
+    private async Task SelectCustomNameAsync(int animeId) { var name = CustomName(animeId); if (string.IsNullOrWhiteSpace(name)) return; await RemoveAsync(animeId, await ReviewService.SetMainEnglishTitleAsync(animeId, name, allowCustom: true)); }
 }

@@ -10,37 +10,71 @@ public sealed class AnimeReviewService(AnimeDbContext db, AnimeCacheService cach
     public Task<int> GetPendingCountAsync() =>
         db.PendingAnimeReviews.CountAsync(review => review.Status == "Pending");
 
+    /// <summary>
+    /// Every record waiting for name review, with its name choices. Only the names are
+    /// loaded: <see cref="AnimeNameReviewItem.Anime"/> is a lightweight copy without its
+    /// season or images, so the whole list stays cheap. Use
+    /// <see cref="LoadNameReviewPageAsync"/> for the records a page actually shows.
+    /// </summary>
     public async Task<List<AnimeNameReviewItem>> GetNamesPendingReviewAsync()
     {
-        var anime = await db.Animes
-            .Include(item => item.Season)
-            .Include(item => item.Images)
-            .Include(item => item.TitleAliases)
-            .Include(item => item.SourceTitles)
+        var rows = await db.Animes.AsNoTracking()
             .Where(item => !item.NamesReviewed)
             .OrderBy(item => item.Title)
+            .Select(item => new
+            {
+                item.Id, item.Title, item.OriginalTitle, item.StartDate,
+                Aliases = item.TitleAliases.Select(alias => alias.Title).ToList(),
+                Sources = item.SourceTitles.Select(source => new { source.Source, source.Title }).ToList()
+            })
             .AsSplitQuery()
             .ToListAsync();
         var settings = await EnglishNameSettings.LoadAsync(db);
-        return anime.Select(item =>
+        return rows.Select(row => NameReviewItem(new Anime
         {
-            var options = EnglishNamePrecheck.Evaluate(item, settings).Options;
-            bool IsCurrent(string? name) => string.Equals(TitleNormalizer.Compact(name), TitleNormalizer.Compact(item.Title), StringComparison.Ordinal);
-            bool IsEnglishOption(string name) => options.Any(option => string.Equals(TitleNormalizer.Compact(option.Title), TitleNormalizer.Compact(name), StringComparison.Ordinal));
-            return new AnimeNameReviewItem
-            {
-                Anime = item,
-                CurrentSources = options.FirstOrDefault(option => IsCurrent(option.Title))?.Sources ?? [],
-                EnglishNames = options.Where(option => !IsCurrent(option.Title)).ToList(),
-                Names = new[] { item.OriginalTitle }
-                    .Concat(item.TitleAliases.Select(alias => alias.Title))
-                    .Where(name => !string.IsNullOrWhiteSpace(name) && !string.Equals(name, item.Title, StringComparison.OrdinalIgnoreCase))
-                    .Select(name => name!.Trim())
-                    .Where(name => !IsEnglishOption(name))
-                    .Distinct(StringComparer.OrdinalIgnoreCase)
-                    .ToList()
-            };
-        }).Where(item => item.Names.Count + item.EnglishNames.Count > 0).ToList();
+            Id = row.Id, Title = row.Title, OriginalTitle = row.OriginalTitle, StartDate = row.StartDate,
+            TitleAliases = row.Aliases.Select(title => new AnimeTitleAlias { AnimeId = row.Id, Title = title }).ToList(),
+            SourceTitles = row.Sources.Select(source => new AnimeSourceTitle { AnimeId = row.Id, Source = source.Source, Title = source.Title }).ToList()
+        }, settings)).Where(item => item.Names.Count + item.EnglishNames.Count > 0).ToList();
+    }
+
+    private static AnimeNameReviewItem NameReviewItem(Anime item, EnglishNameSettings settings)
+    {
+        var options = EnglishNamePrecheck.Evaluate(item, settings).Options;
+        var currentKey = TitleNormalizer.Compact(item.Title);
+        var optionKeys = options.Select(option => TitleNormalizer.Compact(option.Title)).ToHashSet(StringComparer.Ordinal);
+        bool IsCurrent(string? name) => string.Equals(TitleNormalizer.Compact(name), currentKey, StringComparison.Ordinal);
+        return new AnimeNameReviewItem
+        {
+            Anime = item,
+            CurrentSources = options.FirstOrDefault(option => IsCurrent(option.Title))?.Sources ?? [],
+            EnglishNames = options.Where(option => !IsCurrent(option.Title)).ToList(),
+            Names = new[] { item.OriginalTitle }
+                .Concat(item.TitleAliases.Select(alias => alias.Title))
+                .Where(name => !string.IsNullOrWhiteSpace(name) && !string.Equals(name, item.Title, StringComparison.OrdinalIgnoreCase))
+                .Select(name => name!.Trim())
+                .Where(name => !optionKeys.Contains(TitleNormalizer.Compact(name)))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList()
+        };
+    }
+
+    /// <summary>
+    /// The full records, with season and images, behind one page of name review items. Items
+    /// whose record has gone are left out.
+    /// </summary>
+    public async Task<List<AnimeNameReviewItem>> LoadNameReviewPageAsync(IReadOnlyList<AnimeNameReviewItem> page)
+    {
+        var ids = page.Select(item => item.Anime.Id).ToList();
+        var anime = await db.Animes.AsNoTracking().Include(item => item.Season).Include(item => item.Images)
+            .Where(item => ids.Contains(item.Id)).AsSplitQuery().ToDictionaryAsync(item => item.Id);
+        return page.Where(item => anime.ContainsKey(item.Anime.Id)).Select(item => new AnimeNameReviewItem
+        {
+            Anime = anime[item.Anime.Id],
+            CurrentSources = item.CurrentSources,
+            EnglishNames = item.EnglishNames,
+            Names = item.Names
+        }).ToList();
     }
 
     public async Task<int> GetPendingNameCountAsync() =>
@@ -114,15 +148,38 @@ public sealed class AnimeReviewService(AnimeDbContext db, AnimeCacheService cach
     /// </summary>
     public async Task<List<PendingAnimeReviewItem>> GetPendingAsync(MatchingSettings? preview = null)
     {
-        var reviews = await db.PendingAnimeReviews
-            .Where(review => review.Status == "Pending")
-            .OrderByDescending(review => review.CreatedAt)
-            .ToListAsync();
+        var settings = preview?.Normalized() ?? await MatchingSettings.LoadAsync(db);
+        _nameStats = await CatalogueNameUsage.LoadAsync(db);
+        return InQueueOrder(await ScorePendingAsync(db.PendingAnimeReviews.Where(review => review.Status == "Pending"), settings, _nameStats)).ToList();
+    }
+
+    // Catalogue-wide name frequencies from the last full load. Building them is most of the
+    // cost of scoring the queue, so re-scoring a few reviews reuses them; names added since
+    // (by a merge, say) are not counted, which only makes them look slightly rarer.
+    private CatalogueNameStats? _nameStats;
+
+    /// <summary>
+    /// Scores just these reviews again with the saved settings, for after an action that can
+    /// only have changed them. Returns those still pending; resolved or missing ones are left out.
+    /// </summary>
+    public async Task<List<PendingAnimeReviewItem>> RescorePendingAsync(IReadOnlyCollection<int> reviewIds)
+    {
+        if (reviewIds.Count == 0) return [];
+        var settings = await MatchingSettings.LoadAsync(db);
+        _nameStats ??= await CatalogueNameUsage.LoadAsync(db);
+        return await ScorePendingAsync(db.PendingAnimeReviews.Where(review => review.Status == "Pending" && reviewIds.Contains(review.Id)), settings, _nameStats);
+    }
+
+    /// <summary>The queue's order: highest-confidence decisions first, reviews without a live candidate last.</summary>
+    public static IEnumerable<PendingAnimeReviewItem> InQueueOrder(IEnumerable<PendingAnimeReviewItem> items) =>
+        items.OrderByDescending(item => item.BestMatch?.Score ?? -1).ThenByDescending(item => item.Review.CreatedAt);
+
+    private async Task<List<PendingAnimeReviewItem>> ScorePendingAsync(IQueryable<PendingAnimeReview> query, MatchingSettings settings, CatalogueNameStats nameStats)
+    {
+        var reviews = await query.OrderByDescending(review => review.CreatedAt).ToListAsync();
         var ids = reviews.SelectMany(review => JsonSerializer.Deserialize<List<int>>(review.CandidateAnimeIdsJson) ?? []).Distinct().ToList();
         var anime = await db.Animes.Include(item => item.Season).Include(item => item.TitleAliases).Include(item => item.AnimeGenres).ThenInclude(item => item.Genre).Include(item => item.AnimeThemes).ThenInclude(item => item.Theme).AsSplitQuery()
             .Where(item => ids.Contains(item.Id)).ToDictionaryAsync(item => item.Id);
-        var settings = preview?.Normalized() ?? await MatchingSettings.LoadAsync(db);
-        var nameStats = await CatalogueNameUsage.LoadAsync(db);
         return reviews.Select(review =>
         {
             var incoming = JsonSerializer.Deserialize<AnimeImportSnapshot>(review.PayloadJson) ?? new();
@@ -141,11 +198,7 @@ public sealed class AnimeReviewService(AnimeDbContext db, AnimeCacheService cach
                 Suggestion = automated ? MatchScorer.Suggest(scored, settings) : null,
                 Undecided = automated ? MatchScorer.WhyUndecided(scored, settings) : null
             };
-        })
-            // Highest-confidence decisions first; reviews without a live candidate last.
-            .OrderByDescending(item => item.BestMatch?.Score ?? -1)
-            .ThenByDescending(item => item.Review.CreatedAt)
-            .ToList();
+        }).ToList();
     }
 
     // Scored for display without changing the stored review, so the page reflects

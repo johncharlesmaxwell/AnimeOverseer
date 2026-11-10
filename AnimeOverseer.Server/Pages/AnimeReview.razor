@@ -82,7 +82,7 @@
                         <div class="review-incoming review-media"><div><span class="review-label">Incoming</span><h3>@item.Incoming.Title</h3><p>@FormatDate(item.Incoming.StartDate) · @SourceLinks(item.Incoming.MALId, item.Incoming.AniListId)</p></div></div>
                         <div class="review-arrow">→</div>
                         <div class="review-candidate review-media"><div><span class="review-label">@(item.Review.Status == "Merged" ? "Merged into" : "Created as")</span>@if (item.Resolved is { } resolved) { <h3><a href="/anime/@resolved.Id">@resolved.Title</a></h3><p>@FormatDate(resolved.StartDate) · @SourceLinks(resolved.MALId, resolved.AniListId)</p> } else { <p>The catalogue record no longer exists.</p> }<p>@item.Review.ResolvedAt?.ToLocalTime().ToString("d MMM yyyy HH:mm")</p></div></div>
-                        <div class="review-reason review-reason-actions"><span>@item.Review.Reason</span><button @onclick="() => UndoAsync(item.Review.Id)" disabled="@_working" title="@(item.Review.Status == "Merged" ? "Restore the record as it was before the merge" : "Delete the created record") and return this to Needs review">Undo</button></div>
+                        <div class="review-reason review-reason-actions"><span>@item.Review.Reason</span><button @onclick="() => UndoAsync(item)" disabled="@_working" title="@(item.Review.Status == "Merged" ? "Restore the record as it was before the merge" : "Delete the created record") and return this to Needs review">Undo</button></div>
                     </div>
                 }
             </div>
@@ -194,14 +194,14 @@
         _working = true;
         await ReviewService.ReopenDeferredAsync(reviewId);
         _deferred = await ReviewService.GetDeferredAsync();
-        await ReloadAsync();
+        await RefreshReviewsAsync([reviewId]);
         _working = false;
     }
     private async Task ForgetAsync(int decisionId)
     {
         _working = true;
         await ReviewService.ForgetDecisionAsync(decisionId);
-        await ReloadAsync();
+        await RefreshCountsAsync();
         _working = false;
     }
     private async Task LoadSettingsAsync()
@@ -209,12 +209,13 @@
         _settings = await ReviewService.GetMatchingSettingsAsync();
         _pageSize = ReviewPagingSettings.Read(await SettingsService.GetAsync(ReviewPagingSettings.MatchesKey));
     }
-    private async Task UndoAsync(int reviewId)
+    private async Task UndoAsync(AutoResolvedReviewItem item)
     {
         _working = true;
-        var failure = await ReviewService.UndoAutomaticResolutionAsync(reviewId);
+        var failure = await ReviewService.UndoAutomaticResolutionAsync(item.Review.Id);
         _undoNotice = failure ?? "Undone. The review is back in Needs review and automation will leave it to you.";
-        await ReloadAsync();
+        // Undo restores or deletes that catalogue record, so reviews offering it as a candidate change too.
+        await RefreshReviewsAsync([item.Review.Id, .. ReviewsWithCandidate(item.Review.ResolvedAnimeId is int id ? [id] : [])]);
         _working = false;
     }
     private static string ModeLabel(AutoDecisionMode? mode) => mode switch { AutoDecisionMode.Off => "off", AutoDecisionMode.Apply => "applied automatically", AutoDecisionMode.Suggest => "suggest only (dry run)", _ => "…" };
@@ -272,12 +273,35 @@
     {
         if (_items is null || _selected.Count == 0) return;
         _working = true; var selectedItems = _items.Where(item => _selected.Contains(item.Review.Id)).ToList(); var count = await ReviewService.ResolveAsync(selectedItems, decision);
-        _notice = $"{count} record{(count == 1 ? "" : "s")} {decision.ToLowerInvariant()}d."; ClearSelection(); await ReloadAsync(); _working = false;
+        _notice = $"{count} record{(count == 1 ? "" : "s")} {decision switch { "Defer" => "deferred", "Merge" => "merged", _ => "created" }}."; ClearSelection();
+        // A merge changes its target record, so other reviews offering that record are scored again too.
+        var mergeTargets = decision == "Merge" ? selectedItems.Select(item => item.Candidates[0].Id).ToHashSet() : [];
+        await RefreshReviewsAsync([.. selectedItems.Select(item => item.Review.Id), .. ReviewsWithCandidate(mergeTargets)]);
+        _working = false;
     }
+    /// <summary>Scores the whole queue from scratch. Used when the page opens.</summary>
     private async Task ReloadAsync()
     {
         _items = await ReviewService.GetPendingAsync();
         ApplyFilters();
+        await RefreshCountsAsync();
+    }
+    /// <summary>
+    /// After an action, re-scores only the reviews it can have changed, rather than the whole
+    /// queue: resolved ones drop out, reopened ones come back, the rest keep their scores.
+    /// </summary>
+    private async Task RefreshReviewsAsync(IEnumerable<int> reviewIds)
+    {
+        var ids = reviewIds.ToHashSet();
+        var fresh = await ReviewService.RescorePendingAsync(ids);
+        _items = AnimeReviewService.InQueueOrder((_items ?? []).Where(item => !ids.Contains(item.Review.Id)).Concat(fresh)).ToList();
+        ApplyFilters();
+        await RefreshCountsAsync();
+    }
+    private IEnumerable<int> ReviewsWithCandidate(IReadOnlyCollection<int> animeIds) =>
+        animeIds.Count == 0 ? [] : (_items ?? []).Where(item => item.Candidates.Any(candidate => animeIds.Contains(candidate.Id))).Select(item => item.Review.Id);
+    private async Task RefreshCountsAsync()
+    {
         _autoResolvedCount = await ReviewService.GetAutoResolvedCountAsync();
         _deferredCount = await ReviewService.GetDeferredCountAsync();
         _rememberedCount = await ReviewService.GetRememberedDecisionCountAsync();
