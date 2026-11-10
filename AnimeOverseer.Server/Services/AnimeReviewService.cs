@@ -16,11 +16,13 @@ public sealed class AnimeReviewService(AnimeDbContext db, AnimeCacheService cach
     /// season or images, so the whole list stays cheap. Use
     /// <see cref="LoadNameReviewPageAsync"/> for the records a page actually shows.
     /// </summary>
-    public async Task<List<AnimeNameReviewItem>> GetNamesPendingReviewAsync()
+    public async Task<List<AnimeNameReviewItem>> GetNamesPendingReviewAsync() =>
+        await NameReviewItemsAsync(db.Animes.Where(item => !item.NamesReviewed).OrderBy(item => item.Title), await EnglishNameSettings.LoadAsync(db));
+
+    /// <summary>Name review items for these records, names only; records with nothing to choose are left out.</summary>
+    private async Task<List<AnimeNameReviewItem>> NameReviewItemsAsync(IQueryable<Anime> records, EnglishNameSettings settings)
     {
-        var rows = await db.Animes.AsNoTracking()
-            .Where(item => !item.NamesReviewed)
-            .OrderBy(item => item.Title)
+        var rows = await records.AsNoTracking()
             .Select(item => new
             {
                 item.Id, item.Title, item.OriginalTitle, item.StartDate,
@@ -29,7 +31,6 @@ public sealed class AnimeReviewService(AnimeDbContext db, AnimeCacheService cach
             })
             .AsSplitQuery()
             .ToListAsync();
-        var settings = await EnglishNameSettings.LoadAsync(db);
         return rows.Select(row => NameReviewItem(new Anime
         {
             Id = row.Id, Title = row.Title, OriginalTitle = row.OriginalTitle, StartDate = row.StartDate,
@@ -77,8 +78,35 @@ public sealed class AnimeReviewService(AnimeDbContext db, AnimeCacheService cach
         }).ToList();
     }
 
-    public async Task<int> GetPendingNameCountAsync() =>
-        (await GetNamesPendingReviewAsync()).Sum(item => item.Names.Count + item.EnglishNames.Count);
+    public const int NameCountBatchSize = 250;
+
+    /// <summary>
+    /// How many records the name review page lists, counting no further than
+    /// <paramref name="stopAt"/>: the Settings badge shows "999+" beyond that, so a long
+    /// queue is read a batch at a time and only until the limit is reached. A plain SQL
+    /// count would also include records with nothing to choose, which the page never lists.
+    /// </summary>
+    public async Task<int> GetPendingNameCountAsync(int stopAt = 1000)
+    {
+        var settings = await EnglishNameSettings.LoadAsync(db);
+        var count = 0;
+        var afterId = 0;
+        while (count < stopAt)
+        {
+            var batch = await db.Animes.AsNoTracking()
+                .Where(item => !item.NamesReviewed && item.Id > afterId)
+                .OrderBy(item => item.Id)
+                .Select(item => item.Id)
+                .Take(NameCountBatchSize)
+                .ToListAsync();
+            if (batch.Count == 0) break;
+            // An id range rather than the id list keeps each batch's query simple.
+            var (fromId, toId) = (afterId, batch[^1]);
+            afterId = toId;
+            count += (await NameReviewItemsAsync(db.Animes.Where(item => !item.NamesReviewed && item.Id > fromId && item.Id <= toId), settings)).Count;
+        }
+        return Math.Min(count, stopAt);
+    }
 
     /// <summary>
     /// Names each record whose sources settle its English name, and takes it out of name

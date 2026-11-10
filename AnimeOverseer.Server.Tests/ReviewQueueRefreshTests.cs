@@ -33,6 +33,38 @@ public sealed class ReviewQueueRefreshTests : SqliteIntegrationTestBase
     }
 
     [Fact]
+    public async Task Name_count_matches_the_page_across_batches_and_skips_records_with_nothing_to_choose()
+    {
+        await using var db = CreateDb();
+        var season = await AddSeasonAsync(db);
+        // More than one batch, with records that have nothing to choose spread through them.
+        for (var index = 0; index < AnimeReviewService.NameCountBatchSize + 60; index++)
+            db.Animes.Add(index % 5 == 0
+                ? new Anime { Title = $"Only Name {index}", SeasonId = season.Id }
+                : new Anime { Title = $"Name {index}", OriginalTitle = $"Original {index}", SeasonId = season.Id });
+        await db.SaveChangesAsync();
+        var reviews = new AnimeReviewService(db, CreateCache(db));
+
+        var listed = (await reviews.GetNamesPendingReviewAsync()).Count;
+        Assert.Equal(248, listed);
+        Assert.Equal(listed, await reviews.GetPendingNameCountAsync());
+    }
+
+    [Fact]
+    public async Task Name_count_stops_at_the_limit()
+    {
+        await using var db = CreateDb();
+        var season = await AddSeasonAsync(db);
+        for (var index = 0; index < 600; index++)
+            db.Animes.Add(new Anime { Title = $"Name {index}", OriginalTitle = $"Original {index}", SeasonId = season.Id });
+        await db.SaveChangesAsync();
+        var reviews = new AnimeReviewService(db, CreateCache(db));
+
+        Assert.Equal(300, await reviews.GetPendingNameCountAsync(stopAt: 300));
+        Assert.Equal(600, await reviews.GetPendingNameCountAsync());
+    }
+
+    [Fact]
     public async Task A_name_page_leaves_out_records_that_have_gone()
     {
         await using var db = CreateDb();
