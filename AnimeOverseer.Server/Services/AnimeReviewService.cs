@@ -388,7 +388,7 @@ public sealed class AnimeReviewService(AnimeDbContext db, AnimeCacheService cach
             "different" => query.Where(row => !row.Decision.IsSameAnime),
             _ => query
         };
-        var origin = request.Show2 switch { "merge" => "Merge", "create" => "Create", "undo" => "Undo", _ => null };
+        var origin = request.Show2 switch { "merge" => "Merge", "create" => "Create", "undo" => "Undo", "audit" => "Audit", _ => null };
         if (origin is not null) query = query.Where(row => row.Decision.Origin == origin);
         foreach (var pattern in ReviewListQuery.LikePatterns(request.Search))
             query = query.Where(row =>
@@ -416,6 +416,53 @@ public sealed class AnimeReviewService(AnimeDbContext db, AnimeCacheService cach
 
     public async Task<bool> ForgetDecisionAsync(int decisionId) =>
         await db.AnimeMatchDecisions.Where(decision => decision.Id == decisionId).ExecuteDeleteAsync() > 0;
+
+    /// <summary>
+    /// Catalogue rows that are probably the same anime: pairs sharing a name or an uncommon title word,
+    /// scored with the saved weights, with no hard conflict and at least Medium confidence, plus any rows
+    /// that share a provider ID. Pairs a person has called different are left out.
+    /// </summary>
+    public async Task<DuplicateAuditResult> FindPossibleDuplicatesAsync(CancellationToken ct = default)
+    {
+        var started = System.Diagnostics.Stopwatch.StartNew();
+        var settings = await MatchingSettings.LoadAsync(db, ct);
+        var rows = await db.Animes.AsNoTracking().Include(anime => anime.TitleAliases).AsSplitQuery().ToListAsync(ct);
+        var pairs = CatalogueDuplicateAudit.CandidatePairs(rows);
+        var byId = rows.ToDictionary(row => row.Id);
+        var involved = pairs.SelectMany(pair => new[] { pair.Low, pair.High }).ToHashSet();
+
+        // Only rows in a pair need tags and relations; every row needs names for the counts.
+        var genres = (await db.AnimeGenres.AsNoTracking().Select(item => new { item.AnimeId, item.Genre.Name }).ToListAsync(ct)).ToLookup(item => item.AnimeId, item => item.Name);
+        var themes = (await db.AnimeThemes.AsNoTracking().Select(item => new { item.AnimeId, item.Theme.Name }).ToListAsync(ct)).ToLookup(item => item.AnimeId, item => item.Name);
+        foreach (var id in involved)
+        {
+            byId[id].AnimeGenres = genres[id].Select(name => new AnimeGenre { Genre = new Genre { Name = name } }).ToList();
+            byId[id].AnimeThemes = themes[id].Select(name => new AnimeTheme { Theme = new Theme { Name = name } }).ToList();
+        }
+        await CandidateRelations.AttachAsync(db, involved.Select(id => byId[id]), ct);
+
+        var decisions = await db.AnimeMatchDecisions.AsNoTracking().Where(decision => !decision.IsSameAnime).ToListAsync(ct);
+        var minimum = settings.Scoring.MediumConfidence;
+        var found = CatalogueDuplicateAudit.Score(byId, pairs, settings.Scoring, CatalogueNameUsage.From(rows), decisions, minimum);
+        return new DuplicateAuditResult(found, rows.Count, pairs.Count, minimum, started.Elapsed);
+    }
+
+    /// <summary>
+    /// Remembers that two catalogue rows are different anime, so the scan stops listing them and an
+    /// import of one row's provider record never matches the other. The answer is stored against the
+    /// newer row's provider IDs, or the older row's when the newer has none.
+    /// </summary>
+    public async Task<bool> DismissDuplicateAsync(int newerId, int olderId)
+    {
+        var rows = await db.Animes.AsNoTracking().Where(anime => anime.Id == newerId || anime.Id == olderId).ToDictionaryAsync(anime => anime.Id);
+        if (!rows.TryGetValue(newerId, out var newer) || !rows.TryGetValue(olderId, out var older)) return false;
+        if (CatalogueDuplicateAudit.SharedProviderIds(newer, older) is not null) return false;
+        var (source, target) = DuplicatePair.HasProviderId(newer) ? (newer, older) : (older, newer);
+        if (!DuplicatePair.HasProviderId(source)) return false;
+        await cache.RememberAsync(source.AniListId, source.MALId, source.Title, target.Id, isSame: false, "Audit", CancellationToken.None);
+        await db.SaveChangesAsync();
+        return true;
+    }
 
     public Task<MatchingSettings> GetMatchingSettingsAsync() => MatchingSettings.LoadAsync(db);
 

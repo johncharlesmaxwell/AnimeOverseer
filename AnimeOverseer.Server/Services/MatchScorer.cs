@@ -388,7 +388,8 @@ public static class MatchScorer
             evidence.Add(Neutral("Start date", "Start date unknown on one side"));
             return;
         }
-        var days = Math.Abs((source.Value - candidate.Value).TotalDays);
+        // Whole days: some providers store a time of day, which the date spans below leave out.
+        var days = Math.Abs((source.Value.Date - candidate.Value.Date).TotalDays);
         var sourceSpan = DateSpan.Of(source.Value, weights.DatesMayBeImprecise);
         var candidateSpan = DateSpan.Of(candidate.Value, weights.DatesMayBeImprecise);
         var closest = sourceSpan.ClosestDays(candidateSpan);

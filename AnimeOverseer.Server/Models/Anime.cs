@@ -240,7 +240,7 @@ public class AnimeMatchDecision
     public int? SourceMalId { get; set; }
     public int AnimeId { get; set; }
     public bool IsSameAnime { get; set; }
-    public string Origin { get; set; } = string.Empty; // Merge, Create, Undo
+    public string Origin { get; set; } = string.Empty; // Merge, Create, Undo, Audit
     // The provider record's title when the answer was given, for listing and searching.
     public string? SourceTitle { get; set; }
     public DateTime DecidedAt { get; set; } = DateTime.UtcNow;

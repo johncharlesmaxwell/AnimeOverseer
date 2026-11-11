@@ -1,4 +1,5 @@
 using AnimeOverseer.Server.Data;
+using AnimeOverseer.Server.Models;
 using Microsoft.EntityFrameworkCore;
 
 namespace AnimeOverseer.Server.Services;
@@ -18,6 +19,14 @@ public static class CatalogueNameUsage
             .Concat(aliases.Select(alias => (Id: alias.AnimeId, Title: (string?)alias.Title)))
             .ToList();
         return new CatalogueNameStats(Count(names), CountTokens(names), titles.Count);
+    }
+
+    /// <summary>The same counts from rows already loaded with their aliases.</summary>
+    public static CatalogueNameStats From(IReadOnlyCollection<Anime> rows)
+    {
+        var names = rows.SelectMany(row => new[] { (row.Id, row.Title), (row.Id, row.OriginalTitle) }
+            .Concat(row.TitleAliases.Select(alias => (row.Id, (string?)alias.Title)))).ToList();
+        return new CatalogueNameStats(Count(names), CountTokens(names), rows.Count);
     }
 
     /// <summary>Distinct row IDs per compact name.</summary>

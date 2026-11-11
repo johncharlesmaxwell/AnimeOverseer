@@ -15,6 +15,17 @@ public class MatchingImprovementTests
 
     private static MatchEvidence Signal(CandidateMatch match, string signal) => match.Evidence.Single(evidence => evidence.Signal == signal);
 
+    [Fact]
+    public void Start_dates_with_a_time_of_day_are_compared_by_day()
+    {
+        // Some catalogue rows store a broadcast time; that once made the month comparison throw.
+        var match = MatchScorer.Score(Anime("Orbit", start: new DateTime(2025, 1, 5)), Anime("Orbit", start: new DateTime(2025, 3, 10, 13, 0, 0)));
+
+        var start = Signal(match, "Start date");
+        Assert.Equal(MatchEvidenceKind.Positive, start.Kind);
+        Assert.Equal(MatchScoring.Default.StartWithinSixMonths, start.Weight);
+    }
+
     [Theory]
     [InlineData("Movie", "Special")]
     [InlineData("Movie", "OVA")]

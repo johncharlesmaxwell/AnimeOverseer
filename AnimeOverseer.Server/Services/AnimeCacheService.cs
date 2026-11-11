@@ -439,7 +439,7 @@ public class AnimeCacheService(AnimeDbContext db, AniListApiService aniList, Jik
         => (snapshot.AniListId is > 0 ? snapshot.AniListId : review.SourceAniListId, snapshot.MALId is > 0 ? snapshot.MALId : review.SourceMalId);
 
     /// <summary>Records one same/different answer, replacing any earlier answer for the pair.</summary>
-    private async Task RememberAsync(int? aniListId, int? malId, string? sourceTitle, int animeId, bool isSame, string origin, CancellationToken ct)
+    internal async Task RememberAsync(int? aniListId, int? malId, string? sourceTitle, int animeId, bool isSame, string origin, CancellationToken ct)
     {
         if (aniListId is not > 0 && malId is not > 0) return;
         if (!await db.Animes.AnyAsync(anime => anime.Id == animeId, ct)) return;

@@ -20,6 +20,7 @@
         <button role="tab" class="@(_tab == "auto" ? "active" : "")" aria-selected="@(_tab == "auto")" @onclick='() => ShowView("auto")'>Auto-resolved (@_autoResolvedCount)</button>
         <button role="tab" class="@(_tab == "deferred" ? "active" : "")" aria-selected="@(_tab == "deferred")" @onclick='() => ShowView("deferred")'>Deferred (@_deferredCount)</button>
         <button role="tab" class="@(_tab == "remembered" ? "active" : "")" aria-selected="@(_tab == "remembered")" @onclick='() => ShowView("remembered")'>Remembered (@_rememberedCount)</button>
+        <button role="tab" class="@(_tab == "duplicates" ? "active" : "")" aria-selected="@(_tab == "duplicates")" @onclick='() => ShowView("duplicates")' title="Catalogue records that are probably the same anime">Possible duplicates@(_duplicates is null ? "" : $" ({_duplicates.Pairs.Count})")</button>
     </div>
     @if (_checkJobId is int checkJobId) { <p class="review-notice">Provider ID check queued — <a href="/jobs/@checkJobId">follow job #@checkJobId</a>. Reload this page when it finishes.</p> } else if (!string.IsNullOrEmpty(_checkNotice)) { <p class="review-notice">@_checkNotice</p> }
     @if (_tab == "deferred")
@@ -43,9 +44,46 @@
             </div>
         }
     }
+    else if (_tab == "duplicates")
+    {
+        <div class="review-duplicates-intro">
+            <p class="review-muted">Records already in the catalogue that are probably the same anime. Imports only compare a new record with rows sharing a name or nearly all title words, so a duplicate that search missed is created without review. This pairs records sharing any name or uncommon title word and scores each pair as if the newer record were arriving now.@if (_duplicates is { } scan) { <span> Showing pairs with no conflict that score @scan.MinimumScore or more · @scan.PairsCompared.ToString("N0") pairs from @scan.RowsScanned.ToString("N0") records compared in @scan.Elapsed.TotalSeconds.ToString("0.0") s.</span> }</p>
+            <button @onclick="RescanDuplicatesAsync" disabled="@(_scanningDuplicates || _working)">Scan again</button>
+        </div>
+        @if (!string.IsNullOrEmpty(_duplicateNotice)) { <p class="review-notice">@_duplicateNotice</p> }
+        @if (_duplicates is null) { <p class="review-muted">Scanning the catalogue for duplicates…</p> }
+        else if (_duplicates.Pairs.Count == 0) { <div class="review-empty"><h3>No likely duplicates</h3><p>No two catalogue records score as the same anime without a conflict.</p></div> }
+        else
+        {
+            <ReviewFilterBar Label="Filter possible duplicates" SearchPlaceholder="Search either record's titles" FilterLabel="Confidence" Filters="DuplicateFilters" Sorts="DuplicateSorts" Shown="_visibleDuplicates.Count" Total="_duplicates.Pairs.Count" />
+            @if (_visibleDuplicates.Count == 0) { <p class="review-muted">No pairs match these filters.</p> }
+            <ReviewPager Total="_visibleDuplicates.Count" Page="_page" PageSize="_pageSize" PageChanged="GoToPage" PageSizeChanged="SetPageSize" Label="Possible duplicate pages" />
+            <div class="review-list">
+                @foreach (var pair in ReviewPager.Slice(_visibleDuplicates, _page, _pageSize))
+                {
+                    var confidence = MatchScorer.Confidence(pair.Match, _settings?.Scoring);
+                    <div class="review-card review-card-static review-card-pair">
+                        @DuplicateSide(pair.Newer, "Newer record")
+                        <div class="review-arrow">=</div>
+                        @DuplicateSide(pair.Older, "Older record")
+                        <div class="review-evidence">
+                            @if (pair.SharedProviderIds is { } sharedIds) { <span class="review-evidence-item review-evidence-shared" title="Imports never create two records for one provider ID, so these predate a fix or were added by hand">Same provider record: @sharedIds</span> }
+                            <span class="review-score review-score-@confidence.ToLowerInvariant()" title="Score with the newer record as the incoming one">@confidence · @pair.Match.Score</span>
+                            @foreach (var evidence in pair.Match.Evidence.Where(evidence => evidence.Kind != MatchEvidenceKind.Neutral))
+                            {
+                                <span class="review-evidence-item review-evidence-@evidence.Kind.ToString().ToLowerInvariant()">@EvidenceSign(evidence) @evidence.Detail</span>
+                            }
+                        </div>
+                        <div class="review-reason review-reason-actions"><span>@(pair.SharedProviderIds is not null ? "Both records carry the same provider ID, so they are one entry on that provider. Keep the one with your requests and collections and delete the other." : pair.CanDismiss ? "If these are different anime, say so and imports will remember it." : "Neither record has a provider ID, so a \"not the same\" answer cannot be remembered.")</span><button @onclick="() => DismissDuplicateAsync(pair)" disabled="@(_working || !pair.CanDismiss)" title="Remember that these are different anime and stop listing the pair">Not the same</button></div>
+                    </div>
+                }
+            </div>
+            <ReviewPager Total="_visibleDuplicates.Count" Page="_page" PageSize="_pageSize" PageChanged="GoToPage" PageSizeChanged="SetPageSize" Label="Possible duplicate pages" />
+        }
+    }
     else if (_tab == "remembered")
     {
-        <p class="review-muted">Answers you gave when merging or creating, or by undoing an automatic merge. Imports follow them instead of asking again. Forget one to let title matching consider that pair again.</p>
+        <p class="review-muted">Answers you gave when merging or creating, by undoing an automatic merge, or by marking possible duplicates as not the same. Imports follow them instead of asking again. Forget one to let title matching consider that pair again.</p>
         @if (_rememberedPage is null) { <p class="review-muted">Loading remembered decisions…</p> }
         else if (_rememberedCount == 0) { <div class="review-empty"><h3>Nothing remembered yet</h3><p>Merge or create a review and the answer is kept here.</p></div> }
         else
@@ -152,7 +190,7 @@
     // The view and page live in the query string (?view=deferred&page=2) so browser back/forward walks through them.
     // Read from NavigationManager rather than [SupplyParameterFromQuery]: this component is nested in /settings, and
     // nested query subscribers can crash Blazor's location-change dispatch when the parent re-renders mid-notification.
-    private static readonly string[] Views = ["pending", "auto", "deferred", "remembered"];
+    private static readonly string[] Views = ["pending", "auto", "deferred", "remembered", "duplicates"];
     private async Task ApplyLocationAsync()
     {
         var requested = ReviewPager.QueryValue(Nav, "view")?.ToLowerInvariant();
@@ -174,6 +212,8 @@
         switch (view)
         {
             case "deferred": _deferred = await ReviewService.GetDeferredAsync(); break;
+            // The scan reads the whole catalogue, so it runs once per visit and on Scan again.
+            case "duplicates": if (_duplicates is null) await ScanDuplicatesAsync(); break;
         }
         ApplyFilters();
     }
@@ -239,7 +279,7 @@
     private int _page = 1;
     private int _pageSize = ReviewPagingSettings.DefaultPageSize;
     private List<PendingAnimeReviewItem> PageItems => ReviewPager.Slice(_visibleItems, _page, _pageSize).ToList();
-    private int CurrentTabCount => _tab switch { "deferred" => _visibleDeferred.Count, "remembered" => _rememberedPage?.Matching ?? 0, "auto" => _autoPage?.Matching ?? 0, _ => _visibleItems.Count };
+    private int CurrentTabCount => _tab switch { "deferred" => _visibleDeferred.Count, "duplicates" => _visibleDuplicates.Count, "remembered" => _rememberedPage?.Matching ?? 0, "auto" => _autoPage?.Matching ?? 0, _ => _visibleItems.Count };
     // Selection is per page, so an action never touches records the person cannot see.
     private void GoToPage(int page) => NavigateToPage(ReviewPager.Clamp(page, CurrentTabCount, _pageSize));
     private async Task SetPageSize(int size) { _pageSize = size; _page = 1; ClearSelection(); await SettingsService.SetAsync(ReviewPagingSettings.MatchesKey, size.ToString()); NavigateToPage(1, replace: true); }
@@ -321,8 +361,48 @@
     private static readonly KeyValuePair<string, string>[] DeferredFilters = [Option("snoozed", "Still snoozed"), Option("ready", "Reopens on next import")];
     private static readonly KeyValuePair<string, string>[] DeferredSorts = [Option("soonest", "Reopens soonest"), Option("latest", "Reopens latest"), Option("title", "Title A–Z")];
     private static readonly KeyValuePair<string, string>[] RememberedFilters = [Option("same", "Same anime"), Option("different", "Different anime")];
-    private static readonly KeyValuePair<string, string>[] RememberedOriginFilters = [Option("merge", "Merge"), Option("create", "Create"), Option("undo", "Undo")];
+    private static readonly KeyValuePair<string, string>[] RememberedOriginFilters = [Option("merge", "Merge"), Option("create", "Create"), Option("undo", "Undo"), Option("audit", "Duplicate audit")];
     private static readonly KeyValuePair<string, string>[] RememberedSorts = [Option("newest", "Newest first"), Option("oldest", "Oldest first"), Option("title", "Catalogue title A–Z")];
+
+    private DuplicateAuditResult? _duplicates;
+    private List<DuplicatePair> _visibleDuplicates = [];
+    private bool _scanningDuplicates;
+    private string? _duplicateNotice;
+    private static readonly KeyValuePair<string, string>[] DuplicateFilters = [Option("shared", "Same provider ID"), Option("high", "High"), Option("medium", "Medium"), Option("conflict", "Conflict")];
+    private static readonly KeyValuePair<string, string>[] DuplicateSorts = [Option("score", "Best match first"), Option("score-asc", "Weakest match first"), Option("newest", "Newest record first"), Option("title", "Title A–Z"), Option("aired", "Aired, newest first")];
+
+    private async Task ScanDuplicatesAsync()
+    {
+        _scanningDuplicates = true;
+        StateHasChanged(); // Show the scanning message while the catalogue loads.
+        _duplicates = await ReviewService.FindPossibleDuplicatesAsync();
+        _scanningDuplicates = false;
+    }
+    private async Task RescanDuplicatesAsync()
+    {
+        _duplicates = null;
+        _duplicateNotice = null;
+        await ScanDuplicatesAsync();
+        ApplyFilters();
+        _page = ReviewPager.Clamp(_page, CurrentTabCount, _pageSize);
+    }
+    private async Task DismissDuplicateAsync(DuplicatePair pair)
+    {
+        _working = true;
+        if (await ReviewService.DismissDuplicateAsync(pair.Newer.Id, pair.Older.Id))
+        {
+            _duplicates?.Pairs.Remove(pair);
+            _duplicateNotice = $"Remembered that \"{pair.Newer.Title}\" and \"{pair.Older.Title}\" are different anime. Forget it under Remembered to undo.";
+        }
+        else _duplicateNotice = "That pair could not be remembered: one record no longer exists or neither has a provider ID.";
+        ApplyFilters();
+        await RefreshCountsAsync();
+        _working = false;
+    }
+    private RenderFragment DuplicateSide(Anime anime, string label) => @<div class="review-media">
+        <a href="/anime/@anime.Id" class="review-poster-link" title="Open @anime.Title">@if (!string.IsNullOrWhiteSpace(anime.DisplayImageUrl)) { <img class="review-poster" src="@(anime.DisplayLocalImagePath ?? anime.DisplayImageUrl)" alt="@anime.Title poster" loading="lazy" /> } else { <div class="review-poster review-poster-empty">🎬</div> }</a>
+        <div><span class="review-label">@label</span><h3><a href="/anime/@anime.Id">@anime.Title</a></h3>@if (!string.IsNullOrWhiteSpace(anime.OriginalTitle) && anime.OriginalTitle != anime.Title) { <p class="review-alias">@anime.OriginalTitle</p> }<p>@FormatDate(anime.StartDate)@(string.IsNullOrWhiteSpace(anime.Type) ? "" : $" · {anime.Type}")@(anime.Episodes is > 0 ? $" · {anime.Episodes} ep" : "") · @SourceLinks(anime.MALId, anime.AniListId)</p><p class="review-muted">Added @anime.CreatedAt.ToLocalTime().ToString("d MMM yyyy")</p></div>
+    </div>;
 
     private void ApplyFilters()
     {
@@ -353,6 +433,23 @@
         var deferred = (_deferred ?? [])
             .Where(item => ReviewFilterBar.Matches(_query, item.Incoming.Title, item.Incoming.OriginalTitle, item.Review.Reason))
             .Where(item => _show switch { "snoozed" => item.Review.DeferredUntil > now, "ready" => !(item.Review.DeferredUntil > now), _ => true });
+        var duplicates = (_duplicates?.Pairs ?? [])
+            .Where(pair => ReviewFilterBar.Matches(_query, [pair.Newer.Title, pair.Newer.OriginalTitle, .. pair.Newer.TitleAliases.Select(alias => alias.Title), pair.Older.Title, pair.Older.OriginalTitle, .. pair.Older.TitleAliases.Select(alias => alias.Title)]))
+            .Where(pair => _show switch
+            {
+                null => true,
+                "shared" => pair.SharedProviderIds is not null,
+                _ => MatchScorer.Confidence(pair.Match, _settings?.Scoring).Equals(_show, StringComparison.OrdinalIgnoreCase)
+            });
+        _visibleDuplicates = (_sort switch
+        {
+            "score-asc" => duplicates.OrderBy(pair => pair.Match.Score).ThenBy(pair => pair.Newer.Id),
+            "newest" => duplicates.OrderByDescending(pair => pair.Newer.Id),
+            "title" => duplicates.OrderBy(pair => pair.Older.Title, titleOrder),
+            "aired" => duplicates.OrderByDescending(pair => pair.Older.StartDate ?? pair.Newer.StartDate ?? DateTime.MinValue),
+            _ => duplicates // The scan returns best match first.
+        }).ToList();
+
         _visibleDeferred = (_sort switch
         {
             "latest" => deferred.OrderByDescending(item => item.Review.DeferredUntil ?? DateTime.MinValue),
