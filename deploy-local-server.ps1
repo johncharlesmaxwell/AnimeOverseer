@@ -54,6 +54,23 @@ if (-not $dockerPath) {
     throw 'Docker CLI was not found. Install Docker Desktop or add docker.exe to PATH.'
 }
 
+# Check the Docker engine before building, so a stopped Docker Desktop gives a clear message
+# instead of failing partway through the image build. Windows PowerShell turns native stderr
+# into errors under 'Stop', so relax the preference for this probe only.
+$previousErrorActionPreference = $ErrorActionPreference
+$ErrorActionPreference = 'Continue'
+$dockerOsType = (& $dockerPath info --format '{{.OSType}}' 2>$null)
+$dockerInfoExitCode = $LASTEXITCODE
+$ErrorActionPreference = $previousErrorActionPreference
+
+if ($dockerInfoExitCode -ne 0 -or -not $dockerOsType) {
+    throw 'The Docker engine is not running. Start Docker Desktop, wait until it shows "Engine running", then publish again.'
+}
+
+if ("$dockerOsType".Trim() -ne 'linux') {
+    throw "Docker is using $("$dockerOsType".Trim()) containers. Switch Docker Desktop to Linux containers (tray icon > Switch to Linux containers), then publish again."
+}
+
 $imageTag = if ($ImageTag) {
     $ImageTag
 } else {
