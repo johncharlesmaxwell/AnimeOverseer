@@ -245,6 +245,44 @@ namespace AnimeOverseer.Server.Migrations
                     b.ToTable("AnimeMatchDecisions");
                 });
 
+            modelBuilder.Entity("AnimeOverseer.Server.Models.AnimeMergeRecord", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("KeptAnimeId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<DateTime>("MergedAt")
+                        .HasColumnType("TEXT");
+
+                    b.Property<int?>("RemovedAniListId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("RemovedAnimeId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int?>("RemovedKitsuId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int?>("RemovedMalId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("RemovedTitle")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Summary")
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("KeptAnimeId");
+
+                    b.ToTable("AnimeMergeRecords");
+                });
+
             modelBuilder.Entity("AnimeOverseer.Server.Models.AnimeTitleAlias", b =>
                 {
                     b.Property<int>("Id")

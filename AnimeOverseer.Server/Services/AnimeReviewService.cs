@@ -464,6 +464,26 @@ public sealed class AnimeReviewService(AnimeDbContext db, AnimeCacheService cach
         return true;
     }
 
+    /// <summary>
+    /// Folds <paramref name="removeId"/> into <paramref name="keepId"/> and deletes it. Requests, collection
+    /// entries, images, names, tags, recommendations, remembered decisions and reviews move to the kept row,
+    /// which also takes any provider ID it lacks. This cannot be undone; see <see cref="CatalogueMerge"/>.
+    /// </summary>
+    public Task<CatalogueMergeResult> MergeDuplicateAsync(int keepId, int removeId, CancellationToken ct = default)
+        => CatalogueMerge.MergeAsync(db, keepId, removeId, ct);
+
+    /// <summary>How many requests and collection entries each row has, to help choose which to keep.</summary>
+    public async Task<Dictionary<int, DuplicateRowUsage>> GetDuplicateUsageAsync(IReadOnlyCollection<int> animeIds)
+    {
+        var requests = await db.Requests.Where(request => animeIds.Contains(EF.Property<int?>(request, "AnimeId") ?? 0))
+            .GroupBy(request => EF.Property<int?>(request, "AnimeId") ?? 0).Select(group => new { group.Key, Count = group.Count() })
+            .ToDictionaryAsync(row => row.Key, row => row.Count);
+        var collections = await db.AnimeCollectionItems.Where(item => animeIds.Contains(item.AnimeId))
+            .GroupBy(item => item.AnimeId).Select(group => new { group.Key, Count = group.Count() })
+            .ToDictionaryAsync(row => row.Key, row => row.Count);
+        return animeIds.Distinct().ToDictionary(id => id, id => new DuplicateRowUsage(requests.GetValueOrDefault(id), collections.GetValueOrDefault(id)));
+    }
+
     public Task<MatchingSettings> GetMatchingSettingsAsync() => MatchingSettings.LoadAsync(db);
 
     public Task SaveMatchingSettingsAsync(MatchingSettings settings) => MatchingSettings.SaveAsync(db, settings);
@@ -548,6 +568,12 @@ public sealed class PendingAnimeReviewItem
     public MatchSuggestion? Suggestion { get; init; }
     /// <summary>When automation is on but leaves this review for a person, which rule came closest and why it didn't apply.</summary>
     public string? Undecided { get; init; }
+}
+
+/// <summary>How much a person has attached to a catalogue row.</summary>
+public sealed record DuplicateRowUsage(int Requests, int Collections)
+{
+    public int Total => Requests + Collections;
 }
 
 public sealed class DeferredReviewItem

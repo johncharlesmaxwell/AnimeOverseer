@@ -16,6 +16,7 @@ public class AnimeDbContext : DbContext
     public DbSet<AnimeSourceTitle> AnimeSourceTitles { get; set; }
     public DbSet<PendingAnimeReview> PendingAnimeReviews { get; set; }
     public DbSet<AnimeMatchDecision> AnimeMatchDecisions { get; set; }
+    public DbSet<AnimeMergeRecord> AnimeMergeRecords { get; set; }
     public DbSet<Genre> Genres { get; set; }
     public DbSet<AnimeGenre> AnimeGenres { get; set; }
     public DbSet<Theme> Themes { get; set; }
@@ -150,6 +151,8 @@ public class AnimeDbContext : DbContext
             .OnDelete(DeleteBehavior.Cascade);
         modelBuilder.Entity<AnimeMatchDecision>().HasIndex(decision => decision.SourceAniListId);
         modelBuilder.Entity<AnimeMatchDecision>().HasIndex(decision => decision.SourceMalId);
+        // No foreign key: the history outlives either row.
+        modelBuilder.Entity<AnimeMergeRecord>().HasIndex(record => record.KeptAnimeId);
 
         modelBuilder.Entity<Anime>().HasIndex(anime => anime.StartDate);
         modelBuilder.Entity<Anime>().HasIndex(anime => anime.AniListId);

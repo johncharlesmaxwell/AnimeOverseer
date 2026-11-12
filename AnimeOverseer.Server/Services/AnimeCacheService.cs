@@ -757,6 +757,10 @@ public class AnimeCacheService(AnimeDbContext db, AniListApiService aniList, Jik
         var review = await db.PendingAnimeReviews.FirstOrDefaultAsync(item => item.Id == reviewId && item.AutoResolved && (item.Status == "Merged" || item.Status == "Created"), ct);
         if (review is null) return "This review is not an automatic decision that can be undone.";
         if (review.ResolvedAnimeId is not int animeId) return "The resolved catalogue record was not recorded.";
+        // A later duplicate merge moved other records' requests, names and images onto this one (or this
+        // one onto another), so deleting or restoring it would lose them.
+        if (await db.AnimeMergeRecords.AnyAsync(merge => merge.KeptAnimeId == animeId && merge.MergedAt >= (review.ResolvedAt ?? DateTime.MinValue), ct))
+            return "The record has since been merged with a duplicate, so this decision can no longer be undone.";
 
         if (review.Status == "Created")
         {

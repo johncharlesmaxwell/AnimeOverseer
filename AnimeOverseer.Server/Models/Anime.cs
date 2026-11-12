@@ -249,6 +249,24 @@ public class AnimeMatchDecision
         (SourceAniListId is > 0 && SourceAniListId == aniListId) || (SourceMalId is > 0 && SourceMalId == malId);
 }
 
+/// <summary>
+/// One duplicate merge: <see cref="RemovedAnimeId"/> was folded into <see cref="KeptAnimeId"/> and deleted.
+/// Kept as history, and so automatic decisions made on either row before the merge are no longer undone.
+/// </summary>
+public class AnimeMergeRecord
+{
+    public int Id { get; set; }
+    public int KeptAnimeId { get; set; }
+    public int RemovedAnimeId { get; set; }
+    public string RemovedTitle { get; set; } = string.Empty;
+    public int? RemovedAniListId { get; set; }
+    public int? RemovedMalId { get; set; }
+    public int? RemovedKitsuId { get; set; }
+    // What moved across, e.g. "2 requests · 1 collection entry · 3 aliases".
+    public string? Summary { get; set; }
+    public DateTime MergedAt { get; set; } = DateTime.UtcNow;
+}
+
 /// <summary>A merge target's own state before a review merged an import into it.</summary>
 public class AnimeRestorePoint
 {

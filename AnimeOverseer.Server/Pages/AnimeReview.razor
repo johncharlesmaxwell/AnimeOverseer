@@ -74,7 +74,23 @@
                                 <span class="review-evidence-item review-evidence-@evidence.Kind.ToString().ToLowerInvariant()">@EvidenceSign(evidence) @evidence.Detail</span>
                             }
                         </div>
-                        <div class="review-reason review-reason-actions"><span>@(pair.SharedProviderIds is not null ? "Both records carry the same provider ID, so they are one entry on that provider. Keep the one with your requests and collections and delete the other." : pair.CanDismiss ? "If these are different anime, say so and imports will remember it." : "Neither record has a provider ID, so a \"not the same\" answer cannot be remembered.")</span><button @onclick="() => DismissDuplicateAsync(pair)" disabled="@(_working || !pair.CanDismiss)" title="Remember that these are different anime and stop listing the pair">Not the same</button></div>
+                        <div class="review-reason review-reason-actions"><span>@(pair.SharedProviderIds is not null ? "Both records carry the same provider ID, so they are one entry on that provider. Merge them, keeping the one with your requests and collections." : pair.CanDismiss ? "If these are the same anime, merge them; if not, say so and imports will remember it." : "If these are the same anime, merge them. Neither record has a provider ID, so a \"not the same\" answer cannot be remembered.")</span><span class="review-pair-buttons"><button @onclick="() => StartMergeAsync(pair)" disabled="@(_working || _mergePair == pair)" title="Choose which record to keep; everything on the other moves to it">Merge…</button><button @onclick="() => DismissDuplicateAsync(pair)" disabled="@(_working || !pair.CanDismiss)" title="Remember that these are different anime and stop listing the pair">Not the same</button></span></div>
+                        @if (_mergePair == pair)
+                        {
+                            var recommended = RecommendedKeep(pair);
+                            <div class="review-merge-panel">
+                                <p><strong>Which record should stay?</strong> The other is deleted after its requests, collection entries, images, names, genres, themes, recommendations, remembered decisions and reviews move to the one you keep. The kept record also takes any AniList, MAL or Kitsu ID it lacks; its own title and details win where both have one. <strong>This cannot be undone.</strong></p>
+                                <div class="review-merge-choices">
+                                    @foreach (var side in new[] { pair.Newer, pair.Older })
+                                    {
+                                        var other = side == pair.Newer ? pair.Older : pair.Newer;
+                                        <button class="@(side == recommended ? "review-merge-recommended" : "")" @onclick="() => MergeDuplicateAsync(side, other)" disabled="@(_working || _mergeUsage is null)">Keep @(side == pair.Newer ? "newer" : "older"): <strong>@side.Title</strong> <span>@UsageLabel(side)@(side == recommended ? " · suggested" : "")</span></button>
+                                    }
+                                    <button class="review-plain" @onclick="CancelMerge" disabled="@_working">Cancel</button>
+                                </div>
+                                @if (ConflictingIds(pair) is { } conflict) { <p class="review-merge-warning">@conflict</p> }
+                            </div>
+                        }
                     </div>
                 }
             </div>
@@ -385,6 +401,60 @@
         await ScanDuplicatesAsync();
         ApplyFilters();
         _page = ReviewPager.Clamp(_page, CurrentTabCount, _pageSize);
+    }
+    private DuplicatePair? _mergePair;
+    private Dictionary<int, DuplicateRowUsage>? _mergeUsage;
+    private async Task StartMergeAsync(DuplicatePair pair)
+    {
+        _mergePair = pair;
+        _mergeUsage = null;
+        _mergeUsage = await ReviewService.GetDuplicateUsageAsync([pair.Newer.Id, pair.Older.Id]);
+    }
+    private void CancelMerge() { _mergePair = null; _mergeUsage = null; }
+    /// <summary>The record people have used more, else the one with more provider IDs, else the older.</summary>
+    private Anime RecommendedKeep(DuplicatePair pair)
+    {
+        int Used(Anime anime) => _mergeUsage?.GetValueOrDefault(anime.Id)?.Total ?? 0;
+        static int Ids(Anime anime) => (anime.AniListId is > 0 ? 1 : 0) + (anime.MALId is > 0 ? 1 : 0) + (anime.KitsuId is > 0 ? 1 : 0);
+        if (Used(pair.Newer) != Used(pair.Older)) return Used(pair.Newer) > Used(pair.Older) ? pair.Newer : pair.Older;
+        return Ids(pair.Newer) > Ids(pair.Older) ? pair.Newer : pair.Older;
+    }
+    private string UsageLabel(Anime anime)
+    {
+        if (_mergeUsage?.GetValueOrDefault(anime.Id) is not { } usage) return "counting requests…";
+        if (usage.Total == 0) return "no requests or collections";
+        var parts = new List<string>();
+        if (usage.Requests > 0) parts.Add($"{usage.Requests} request{(usage.Requests == 1 ? "" : "s")}");
+        if (usage.Collections > 0) parts.Add($"{usage.Collections} collection{(usage.Collections == 1 ? "" : "s")}");
+        return string.Join(" · ", parts);
+    }
+    private static string? ConflictingIds(DuplicatePair pair)
+    {
+        static bool Differ(int? a, int? b) => a is > 0 && b is > 0 && a != b;
+        var differing = new List<string>();
+        if (Differ(pair.Newer.AniListId, pair.Older.AniListId)) differing.Add("AniList");
+        if (Differ(pair.Newer.MALId, pair.Older.MALId)) differing.Add("MAL");
+        if (Differ(pair.Newer.KitsuId, pair.Older.KitsuId)) differing.Add("Kitsu");
+        return differing.Count == 0 ? null : $"The records have different {string.Join(" and ", differing)} IDs. The kept record's ID stays and the other is dropped.";
+    }
+    private async Task MergeDuplicateAsync(Anime keep, Anime remove)
+    {
+        _working = true;
+        var result = await ReviewService.MergeDuplicateAsync(keep.Id, remove.Id);
+        if (result.Merged)
+        {
+            // Pairs with the deleted record are gone; the kept record's other pairs show its old details until the next scan.
+            _duplicates?.Pairs.RemoveAll(other => other.Newer.Id == remove.Id || other.Older.Id == remove.Id);
+            var moved = result.Moved.Count > 0 ? $" Moved {string.Join(", ", result.Moved)}." : "";
+            var dropped = result.DroppedIds.Count > 0 ? $" Dropped the removed record's {string.Join(", ", result.DroppedIds)}." : "";
+            _duplicateNotice = $"Merged \"{remove.Title}\" into \"{keep.Title}\" and deleted it.{moved}{dropped}";
+        }
+        else _duplicateNotice = $"Not merged: {result.Failure}";
+        CancelMerge();
+        ApplyFilters();
+        // Reviews offering either record as a candidate now offer only the kept one.
+        await RefreshReviewsAsync(ReviewsWithCandidate([keep.Id, remove.Id]).ToList());
+        _working = false;
     }
     private async Task DismissDuplicateAsync(DuplicatePair pair)
     {
