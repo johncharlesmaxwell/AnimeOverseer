@@ -37,6 +37,23 @@ public class Anime
     // remaining aliases in the name review queue.
     public bool NamesReviewed { get; set; }
 
+    // The current Title was chosen by the English-name pre-check from the sources'
+    // English titles rather than by a person, so a later pre-check may still update it.
+    public bool NameFromSources { get; set; }
+
+    // Each source's latest explicitly English title, one row per source.
+    public List<AnimeSourceTitle> SourceTitles { get; set; } = new();
+
+    // Which provider this incoming record came from ("AniList", "MyAnimeList",
+    // "Kitsu", "AnimeSchedule") and that provider's own English title, if it has one.
+    // Kept apart from Title so a person's edit to an incoming name is not mistaken
+    // for what the source said.
+    [NotMapped]
+    public string? DataSource { get; set; }
+
+    [NotMapped]
+    public string? SourceEnglishTitle { get; set; }
+
     // Provider-supplied English, romaji, native, and synonym titles used while
     // resolving the catalogue identity. They are retained as AnimeTitleAlias
     // rows after import so aliases from one provider can match future imports.
@@ -116,6 +133,11 @@ public class Anime
 
     [NotMapped]
     public List<SourceImage> SourceImages { get; set; } = new();
+
+    // Franchise entries a provider lists as related to this import (sequels,
+    // prequels, side stories). A related entry is never the same anime.
+    [NotMapped]
+    public List<ProviderRelation> ProviderRelations { get; set; } = new();
 }
 
 /// <summary>A persisted AniList recommendation from one locally stored anime to another.</summary>
@@ -146,6 +168,17 @@ public class AnimeTitleAlias
     public string Title { get; set; } = string.Empty;
 }
 
+/// <summary>The English title one source gives for an anime, replaced on each sync from that source.</summary>
+public class AnimeSourceTitle
+{
+    public int Id { get; set; }
+    public int AnimeId { get; set; }
+    public Anime Anime { get; set; } = null!;
+    public string Source { get; set; } = string.Empty;
+    public string Title { get; set; } = string.Empty;
+    public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
+}
+
 /// <summary>
 /// An import whose identity cannot be established safely.  The source record is
 /// retained as a compact JSON snapshot until someone chooses to merge or create it.
@@ -160,10 +193,91 @@ public class PendingAnimeReview
     public int? SourceMalId { get; set; }
     public string Reason { get; set; } = string.Empty;
     public string PayloadJson { get; set; } = string.Empty;
+    // The snapshot's title (or original title when it has none), copied out of PayloadJson so lists can search and sort in SQL.
+    public string? SourceTitle { get; set; }
     public string CandidateAnimeIdsJson { get; set; } = "[]";
+    // The best candidate's 0-100 match score, and every candidate's scored
+    // evidence. Null on reviews queued before match scoring existed.
+    public int? MatchScore { get; set; }
+    public string? MatchEvidenceJson { get; set; }
     public string Status { get; set; } = "Pending"; // Pending, Merged, Created, Deferred
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
     public DateTime? ResolvedAt { get; set; }
+    // The catalogue row a Merge or Create produced.
+    public int? ResolvedAnimeId { get; set; }
+    // True when the decision was made without a person, so it can be undone.
+    public bool AutoResolved { get; set; }
+    // The merged row as it was before a Merge, for undo. See AnimeRestorePoint.
+    public string? PreMergeSnapshotJson { get; set; }
+    // Set when a person undoes an automatic decision; automation then leaves it alone.
+    public bool AutoDecisionUndone { get; set; }
+    // A Deferred review stays snoozed until this time; later imports of the same
+    // source then reopen it. Null on reviews deferred before snoozing existed.
+    public DateTime? DeferredUntil { get; set; }
+
+    /// <summary>Stores the import snapshot, keeping <see cref="SourceTitle"/> in step with it.</summary>
+    public void SetPayload(AnimeImportSnapshot snapshot)
+    {
+        PayloadJson = System.Text.Json.JsonSerializer.Serialize(snapshot);
+        SourceTitle = ListTitle(snapshot);
+    }
+
+    /// <summary>The title a list shows and searches for a snapshot: its title, else its original title.</summary>
+    public static string? ListTitle(AnimeImportSnapshot snapshot) =>
+        !string.IsNullOrWhiteSpace(snapshot.Title) ? snapshot.Title.Trim()
+        : !string.IsNullOrWhiteSpace(snapshot.OriginalTitle) ? snapshot.OriginalTitle.Trim()
+        : null;
+}
+
+/// <summary>
+/// A person's answer to "is this provider record the same anime as this catalogue
+/// row?", remembered so later imports are not asked the same question again.
+/// </summary>
+public class AnimeMatchDecision
+{
+    public int Id { get; set; }
+    public int? SourceAniListId { get; set; }
+    public int? SourceMalId { get; set; }
+    public int AnimeId { get; set; }
+    public bool IsSameAnime { get; set; }
+    public string Origin { get; set; } = string.Empty; // Merge, Create, Undo, Audit
+    // The provider record's title when the answer was given, for listing and searching.
+    public string? SourceTitle { get; set; }
+    public DateTime DecidedAt { get; set; } = DateTime.UtcNow;
+
+    public bool AppliesTo(int? aniListId, int? malId) =>
+        (SourceAniListId is > 0 && SourceAniListId == aniListId) || (SourceMalId is > 0 && SourceMalId == malId);
+}
+
+/// <summary>
+/// One duplicate merge: <see cref="RemovedAnimeId"/> was folded into <see cref="KeptAnimeId"/> and deleted.
+/// Kept as history, and so automatic decisions made on either row before the merge are no longer undone.
+/// </summary>
+public class AnimeMergeRecord
+{
+    public int Id { get; set; }
+    public int KeptAnimeId { get; set; }
+    public int RemovedAnimeId { get; set; }
+    public string RemovedTitle { get; set; } = string.Empty;
+    public int? RemovedAniListId { get; set; }
+    public int? RemovedMalId { get; set; }
+    public int? RemovedKitsuId { get; set; }
+    // What moved across, e.g. "2 requests · 1 collection entry · 3 aliases".
+    public string? Summary { get; set; }
+    public DateTime MergedAt { get; set; } = DateTime.UtcNow;
+}
+
+/// <summary>A merge target's own state before a review merged an import into it.</summary>
+public class AnimeRestorePoint
+{
+    public AnimeImportSnapshot Fields { get; set; } = new();
+    public string? LocalImagePath { get; set; }
+    public int? PreferredImageId { get; set; }
+    public List<string> Aliases { get; set; } = [];
+    public List<int> ImageIds { get; set; } = [];
+    public Dictionary<string, string> SourceTitles { get; set; } = [];
+    public bool NamesReviewed { get; set; }
+    public bool NameFromSources { get; set; }
 }
 
 /// <summary>Serializable import fields needed to safely resume a reviewed decision.</summary>
@@ -174,6 +288,8 @@ public class AnimeImportSnapshot
     public int? KitsuId { get; set; }
     public string Title { get; set; } = string.Empty;
     public bool HasEnglishTitle { get; set; }
+    public string? DataSource { get; set; }
+    public string? SourceEnglishTitle { get; set; }
     public string? OriginalTitle { get; set; }
     public List<string> AlternativeTitles { get; set; } = [];
     public string? Synopsis { get; set; }
@@ -189,6 +305,15 @@ public class AnimeImportSnapshot
     public List<string> Themes { get; set; } = [];
     public List<string> Demographics { get; set; } = [];
     public List<SourceImage> SourceImages { get; set; } = [];
+    public List<ProviderRelation> ProviderRelations { get; set; } = [];
+}
+
+/// <summary>A provider's link from an imported anime to another entry in its franchise.</summary>
+public class ProviderRelation
+{
+    public string RelationType { get; set; } = string.Empty;
+    public int? AniListId { get; set; }
+    public int? MalId { get; set; }
 }
 
 public class SourceImage

@@ -104,6 +104,7 @@ public class KitsuApiService : IAnimeDataSource
             KitsuId = element.TryGetProperty("id", out var id) && int.TryParse(id.GetString(), out var parsedId) ? parsedId : 0,
             Title = title,
             HasEnglishTitle = !string.IsNullOrWhiteSpace(englishTitle),
+            DataSource = "Kitsu", SourceEnglishTitle = englishTitle,
             OriginalTitle = canonicalTitle,
             Synopsis = synopsis,
             ImageUrl = coverImage,
@@ -126,12 +127,13 @@ public class KitsuApiService : IAnimeDataSource
         };
     }
 
-    private static string? GetEnglishTitle(JsonElement attributes)
+    internal static string? GetEnglishTitle(JsonElement attributes)
     {
         if (!attributes.TryGetProperty("titles", out var titles) || titles.ValueKind != JsonValueKind.Object)
             return null;
 
-        foreach (var locale in new[] { "en", "en_us", "en_jp" })
+        // Not "en_jp": that is Kitsu's romanised Japanese title, not an English one.
+        foreach (var locale in new[] { "en", "en_us" })
         {
             if (titles.TryGetProperty(locale, out var value) && value.ValueKind != JsonValueKind.Null &&
                 !string.IsNullOrWhiteSpace(value.GetString()))

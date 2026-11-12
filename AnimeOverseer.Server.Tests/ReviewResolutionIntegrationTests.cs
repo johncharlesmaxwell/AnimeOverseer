@@ -24,6 +24,40 @@ public sealed class ReviewResolutionIntegrationTests : SqliteIntegrationTestBase
     }
 
     [Fact]
+    public async Task Selecting_a_name_for_an_untitled_record_does_not_save_a_blank_alias()
+    {
+        await using var db = CreateDb();
+        var season = await AddSeasonAsync(db);
+        var anime = new Anime { AniListId = 1, Title = "", OriginalTitle = "Original Name", SeasonId = season.Id };
+        db.Animes.Add(anime);
+        await db.SaveChangesAsync();
+        var reviews = new AnimeReviewService(db, CreateCache(db));
+
+        Assert.True(await reviews.SetMainEnglishTitleAsync(anime.Id, "Original Name"));
+        Assert.DoesNotContain(await db.AnimeTitleAliases.Where(alias => alias.AnimeId == anime.Id).ToListAsync(), alias => string.IsNullOrWhiteSpace(alias.Title));
+    }
+
+    [Fact]
+    public async Task Confirming_the_current_name_keeps_it_and_removes_the_record_from_name_review()
+    {
+        await using var db = CreateDb();
+        var season = await AddSeasonAsync(db);
+        var named = new Anime { AniListId = 1, Title = "Current Name", OriginalTitle = "Original Name", SeasonId = season.Id };
+        var blank = new Anime { AniListId = 2, Title = "", OriginalTitle = "Only Original", SeasonId = season.Id };
+        db.Animes.AddRange(named, blank);
+        await db.SaveChangesAsync();
+        var reviews = new AnimeReviewService(db, CreateCache(db));
+
+        Assert.True(await reviews.ConfirmCurrentTitleAsync(named.Id));
+        Assert.False(await reviews.ConfirmCurrentTitleAsync(blank.Id));
+        var pending = await reviews.GetNamesPendingReviewAsync();
+        Assert.Equal([blank.Id], pending.Select(item => item.Anime.Id));
+        var confirmed = await db.Animes.SingleAsync(item => item.Id == named.Id);
+        Assert.Equal("Current Name", confirmed.Title);
+        Assert.True(confirmed.HasEnglishTitle);
+    }
+
+    [Fact]
     public async Task Merge_review_keeps_english_primary_title_and_collects_incoming_aliases_and_images()
     {
         await using var db = CreateDb();
@@ -98,5 +132,33 @@ public sealed class ReviewResolutionIntegrationTests : SqliteIntegrationTestBase
         var merged = await db.Animes.Include(x => x.Images).SingleAsync();
         Assert.Equal(preferred.Id, merged.PreferredImageId);
         Assert.Equal(2, merged.Images.Count);
+    }
+
+    [Fact]
+    public async Task Pending_reviews_without_stored_scores_are_scored_on_read_and_sorted_by_confidence()
+    {
+        await using var db = CreateDb();
+        var season = await AddSeasonAsync(db);
+        var strong = new Anime { Title = "Orbit", Type = "TV", SeasonId = season.Id };
+        var weak = new Anime { Title = "Lantern", Type = "Movie", SeasonId = season.Id };
+        db.Animes.AddRange(strong, weak);
+        await db.SaveChangesAsync();
+        var weakReview = AddReview(season.Id, Incoming(11, "Lantern", true), [weak.Id]);
+        weakReview.CreatedAt = DateTime.UtcNow;
+        var strongReview = AddReview(season.Id, Incoming(12, "Orbit", true), [strong.Id]);
+        strongReview.CreatedAt = DateTime.UtcNow.AddDays(-1);
+        db.PendingAnimeReviews.AddRange(weakReview, strongReview);
+        await db.SaveChangesAsync();
+        // Snapshots built by AddReview carry no format, so make the weak one disagree.
+        var snapshot = System.Text.Json.JsonSerializer.Deserialize<AnimeImportSnapshot>(weakReview.PayloadJson)!;
+        snapshot.Type = "TV";
+        weakReview.PayloadJson = System.Text.Json.JsonSerializer.Serialize(snapshot);
+        await db.SaveChangesAsync();
+
+        var items = await new AnimeReviewService(db, CreateCache(db)).GetPendingAsync();
+
+        Assert.Equal([strongReview.Id, weakReview.Id], items.Select(item => item.Review.Id));
+        Assert.Equal("Conflict", MatchScorer.Confidence(items[1].BestMatch!));
+        Assert.Null((await db.PendingAnimeReviews.FindAsync(strongReview.Id))!.MatchScore);
     }
 }

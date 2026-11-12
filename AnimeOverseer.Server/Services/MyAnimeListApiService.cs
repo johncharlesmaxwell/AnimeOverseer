@@ -60,6 +60,7 @@ public class MyAnimeListApiService(HttpClient httpClient, IConfiguration configu
         {
         MALId = x.GetProperty("id").GetInt32(), Title = english ?? x.GetProperty("title").GetString() ?? "Unknown",
         HasEnglishTitle = !string.IsNullOrWhiteSpace(english),
+        DataSource = "MyAnimeList", SourceEnglishTitle = english,
         OriginalTitle = Get(titles, "ja"),
         AlternativeTitles = GetAlternativeTitles(x),
         Synopsis = Get(x, "synopsis"), ImageUrl = x.TryGetProperty("main_picture", out var pic) ? Get(pic, "large") ?? Get(pic, "medium") : null,

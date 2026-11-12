@@ -93,6 +93,7 @@ public class SyncJobRunnerService(
                 "TopUpcoming" => sync.RunTopUpcomingSyncAsync(job, jobCts.Token),
                 "Recommendations" => sync.RunRecommendationsSyncAsync(job, jobCts.Token),
                 "Relations" => sync.RunRelationsSyncAsync(job, jobCts.Token),
+                "ProviderIds" => sync.RunProviderIdsSyncAsync(job, jobCts.Token),
                 "Kitsu"   => sync.RunKitsuSyncAsync(job, jobCts.Token),
                 _         => Task.CompletedTask
             });
@@ -138,10 +139,35 @@ public class SyncJobRunnerService(
         }
 
         logger.LogInformation("Sync job {Id} ({Type}) finished with status {Status}", job.Id, job.JobType, job.Status);
+        if (job.Status == "Completed") await RunEnglishNamePrecheckAsync(scope.ServiceProvider, job, db, ct);
         // Ranged jobs intentionally advance only after one successful season. This keeps
         // the queue serial and preserves each API client's throttling.
         await scope.ServiceProvider.GetRequiredService<SyncJobService>().QueueNextPartAsync(job);
         return true;
+    }
+
+    /// <summary>Settles English names the sources agree on, so they skip name review.</summary>
+    private async Task RunEnglishNamePrecheckAsync(IServiceProvider services, SyncJob job, AnimeDbContext db, CancellationToken ct)
+    {
+        try
+        {
+            var settings = await EnglishNameSettings.LoadAsync(db, ct);
+            if (!settings.Enabled) return;
+            var result = await services.GetRequiredService<AnimeReviewService>().ApplyEnglishNamePrecheckAsync(settings, ct);
+            if (result.Total + result.ReturnedToReview == 0) return;
+            db.SyncJobLogs.Add(new SyncJobLog
+            {
+                SyncJobId = job.Id,
+                Timestamp = DateTime.UtcNow,
+                Level = "Info",
+                Message = $"English names from sources: {result.Renamed:N0} renamed, {result.Confirmed:N0} confirmed, {result.ReturnedToReview:N0} back to name review"
+            });
+            await db.SaveChangesAsync(CancellationToken.None);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            logger.LogWarning(ex, "English-name pre-check after sync job {Id} failed", job.Id);
+        }
     }
 
     private static string FormatError(Exception exception)

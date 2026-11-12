@@ -13,7 +13,10 @@ public class AnimeDbContext : DbContext
     public DbSet<Anime> Animes { get; set; }
     public DbSet<AnimeImage> AnimeImages { get; set; }
     public DbSet<AnimeTitleAlias> AnimeTitleAliases { get; set; }
+    public DbSet<AnimeSourceTitle> AnimeSourceTitles { get; set; }
     public DbSet<PendingAnimeReview> PendingAnimeReviews { get; set; }
+    public DbSet<AnimeMatchDecision> AnimeMatchDecisions { get; set; }
+    public DbSet<AnimeMergeRecord> AnimeMergeRecords { get; set; }
     public DbSet<Genre> Genres { get; set; }
     public DbSet<AnimeGenre> AnimeGenres { get; set; }
     public DbSet<Theme> Themes { get; set; }
@@ -112,6 +115,10 @@ public class AnimeDbContext : DbContext
             .HasIndex(alias => new { alias.AnimeId, alias.Title })
             .IsUnique();
 
+        modelBuilder.Entity<AnimeSourceTitle>()
+            .HasIndex(title => new { title.AnimeId, title.Source })
+            .IsUnique();
+
         modelBuilder.Entity<AnimeRecommendation>()
             .HasKey(recommendation => new { recommendation.SourceAnimeId, recommendation.RecommendedAnimeId });
         modelBuilder.Entity<AnimeRecommendation>()
@@ -136,6 +143,16 @@ public class AnimeDbContext : DbContext
 
         modelBuilder.Entity<PendingAnimeReview>()
             .HasIndex(review => new { review.Status, review.CreatedAt });
+
+        modelBuilder.Entity<AnimeMatchDecision>()
+            .HasOne<Anime>()
+            .WithMany()
+            .HasForeignKey(decision => decision.AnimeId)
+            .OnDelete(DeleteBehavior.Cascade);
+        modelBuilder.Entity<AnimeMatchDecision>().HasIndex(decision => decision.SourceAniListId);
+        modelBuilder.Entity<AnimeMatchDecision>().HasIndex(decision => decision.SourceMalId);
+        // No foreign key: the history outlives either row.
+        modelBuilder.Entity<AnimeMergeRecord>().HasIndex(record => record.KeptAnimeId);
 
         modelBuilder.Entity<Anime>().HasIndex(anime => anime.StartDate);
         modelBuilder.Entity<Anime>().HasIndex(anime => anime.AniListId);

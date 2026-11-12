@@ -272,6 +272,8 @@ public class JikanApiService : IAnimeDataSource
             MALId = element.TryGetProperty("mal_id", out var malId) ? malId.GetInt32() : 0,
             Title = title,
             HasEnglishTitle = !string.IsNullOrWhiteSpace(titleEnglish),
+            // Jikan reads MyAnimeList, so its English title is MyAnimeList's.
+            DataSource = "MyAnimeList", SourceEnglishTitle = titleEnglish,
             OriginalTitle = element.TryGetProperty("title", out var jt) && jt.ValueKind != JsonValueKind.Null
                 ? jt.GetString() : null,
             Synopsis = element.TryGetProperty("synopsis", out var syn) ? syn.GetString() : "No synopsis available.",

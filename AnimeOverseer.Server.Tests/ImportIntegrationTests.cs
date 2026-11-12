@@ -48,7 +48,8 @@ public sealed class ImportIntegrationTests : SqliteIntegrationTestBase
     {
         await using var db = CreateDb();
         var season = await AddSeasonAsync(db);
-        db.Animes.AddRange(new Anime { AniListId = 1, Title = "First", SeasonId = season.Id, TitleAliases = [new() { Title = "Shared Name" }] }, new Anime { AniListId = 2, Title = "Second", SeasonId = season.Id, TitleAliases = [new() { Title = "Shared Name" }] });
+        // Rows without provider IDs cannot be confirmed or ruled out by ID.
+        db.Animes.AddRange(new Anime { Title = "First", SeasonId = season.Id, TitleAliases = [new() { Title = "Shared Name" }] }, new Anime { Title = "Second", SeasonId = season.Id, TitleAliases = [new() { Title = "Shared Name" }] });
         await db.SaveChangesAsync();
         var incoming = Incoming(999, "Shared Name", false);
         await CreateCache(db).FetchAndCacheSeasonsFromAsync(2026, ["summer"], (_, _, _) => Task.FromResult(new List<Anime> { incoming }));
@@ -64,13 +65,58 @@ public sealed class ImportIntegrationTests : SqliteIntegrationTestBase
     {
         await using var db = CreateDb();
         var season = await AddSeasonAsync(db);
-        var existing = new Anime { AniListId = 81, Title = "Café: The Show II", SeasonId = season.Id };
+        var existing = new Anime { Title = "Café: The Show II", SeasonId = season.Id };
         db.Animes.Add(existing);
         await db.SaveChangesAsync();
         await CreateCache(db).FetchAndCacheSeasonsFromAsync(2026, ["fall"], (_, _, _) => Task.FromResult(new List<Anime> { Incoming(82, "Cafe The Show 2", false) }));
         var review = await db.PendingAnimeReviews.SingleAsync();
         Assert.Equal(System.Text.Json.JsonSerializer.Serialize(new[] { existing.Id }), review.CandidateAnimeIdsJson);
         Assert.Equal(1, await db.Animes.CountAsync());
+    }
+
+    [Fact]
+    public async Task Staged_review_stores_the_match_score_and_evidence()
+    {
+        await using var db = CreateDb();
+        var season = await AddSeasonAsync(db);
+        db.Animes.Add(new Anime { Title = "Orbit", Type = "TV", Episodes = 12, Duration = 24, StartDate = new DateTime(2026, 4, 1), SeasonId = season.Id });
+        await db.SaveChangesAsync();
+        var incoming = Incoming(82, "Orbit", true);
+        incoming.Type = "TV";
+        incoming.Episodes = 12;
+        incoming.Duration = 24;
+        incoming.StartDate = new DateTime(2026, 4, 8);
+
+        await CreateCache(db).FetchAndCacheSeasonsFromAsync(2026, ["spring"], (_, _, _) => Task.FromResult(new List<Anime> { incoming }));
+
+        var review = await db.PendingAnimeReviews.SingleAsync();
+        Assert.NotNull(review.MatchScore);
+        var match = Assert.Single(System.Text.Json.JsonSerializer.Deserialize<List<AnimeOverseer.Server.Services.CandidateMatch>>(review.MatchEvidenceJson!)!);
+        Assert.Equal(review.MatchScore, match.Score);
+        Assert.Equal(100, match.Score);
+        Assert.Equal("High", AnimeOverseer.Server.Services.MatchScorer.Confidence(match));
+        Assert.Contains("\"Positive\"", review.MatchEvidenceJson);
+    }
+
+    [Fact]
+    public async Task Fuzzy_title_match_is_a_candidate_even_when_another_row_matches_exactly()
+    {
+        await using var db = CreateDb();
+        var season = await AddSeasonAsync(db);
+        // The exact alias match is the season-one row; the right row only matches by tokens.
+        var exact = new Anime { Title = "Orbit Chronicle", SeasonId = season.Id };
+        var fuzzy = new Anime { Title = "The Orbit Chronicle Saga II", SeasonId = season.Id };
+        db.Animes.AddRange(exact, fuzzy);
+        await db.SaveChangesAsync();
+        var incoming = Incoming(83, "Orbit Chronicle Saga Season 2", false, aliases: ["Orbit Chronicle"]);
+
+        await CreateCache(db).FetchAndCacheSeasonsFromAsync(2026, ["fall"], (_, _, _) => Task.FromResult(new List<Anime> { incoming }));
+
+        var review = await db.PendingAnimeReviews.SingleAsync();
+        var candidates = System.Text.Json.JsonSerializer.Deserialize<List<int>>(review.CandidateAnimeIdsJson)!;
+        Assert.Contains(exact.Id, candidates);
+        Assert.Contains(fuzzy.Id, candidates);
+        Assert.Equal(2, await db.Animes.CountAsync());
     }
 
     [Fact]

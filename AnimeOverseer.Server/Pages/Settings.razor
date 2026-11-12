@@ -42,6 +42,10 @@
            aria-selected="@(_activeTab == SettingsTab.Storage)">
             Storage
         </a>
+        <a role="tab" class="settings-tab @TabClass(SettingsTab.Matching)" href="@TabUrl(SettingsTab.Matching)"
+           aria-selected="@(_activeTab == SettingsTab.Matching)">
+            Matching
+        </a>
         <a role="tab" class="settings-tab @TabClass(SettingsTab.Review)" href="@TabUrl(SettingsTab.Review)"
            aria-selected="@(_activeTab == SettingsTab.Review)">
             Review matches (@FormatReviewMatchCount())
@@ -57,6 +61,13 @@
     </div>
 
     <div class="settings-content">
+    @if (_activeTab == SettingsTab.Matching)
+    {
+        <h2>Catalogue matching</h2>
+        <p class="review-muted">How incoming titles are scored against the catalogue, and when a review is decided without you.</p>
+        <MatchingSettingsEditor />
+    }
+
     @if (_activeTab == SettingsTab.Review)
     {
         <AnimeReview />
@@ -593,7 +604,7 @@
 </div>
 
 @code {
-    private enum SettingsTab { Sources, Servers, History, Storage, Review, Names, Library }
+    private enum SettingsTab { Sources, Servers, History, Storage, Matching, Review, Names, Library }
 
     [Parameter, SupplyParameterFromQuery(Name = "tab")]
     public string? Tab { get; set; }
@@ -657,6 +668,7 @@
         SettingsTab.Servers => "/settings?tab=servers",
         SettingsTab.History => "/settings?tab=history",
         SettingsTab.Storage => "/settings?tab=storage",
+        SettingsTab.Matching => "/settings?tab=matching",
         SettingsTab.Review => "/settings?tab=review",
         SettingsTab.Names => "/settings?tab=names",
         SettingsTab.Library => "/settings?tab=library",
@@ -672,6 +684,7 @@
             "servers" => SettingsTab.Servers,
             "history" => SettingsTab.History,
             "storage" => SettingsTab.Storage,
+            "matching" => SettingsTab.Matching,
             "review" => SettingsTab.Review,
             "names" => SettingsTab.Names,
             "library" => SettingsTab.Library,

@@ -1,0 +1,107 @@
+@* Search, filter and sort controls for a review list. State lives in the query string
+   (?search=, ?show=, ?show2=, ?sort=) so it survives reloads and browser back/forward; the parent reads it
+   with ReviewPager.QueryValue and applies it to its list, in memory or in SQL.
+   The search uses ?search= rather than ?q=, which the header's site-wide search box reads on every page. *@
+@inject NavigationManager Nav
+
+<div class="review-filters" role="search" aria-label="@Label">
+    <input type="search" class="review-filter-search" placeholder="@SearchPlaceholder" value="@_search" aria-label="@SearchPlaceholder"
+           @oninput="OnSearchInput" @onkeydown="OnSearchKey" />
+    @if (Filters is { Count: > 0 })
+    {
+        <label>@FilterLabel
+            <select value="@(ReviewPager.QueryValue(Nav, "show") ?? "")" @onchange='args => Set("show", args.Value?.ToString())'>
+                <option value="">All</option>
+                @foreach (var option in Filters) { <option value="@option.Key">@option.Value</option> }
+            </select>
+        </label>
+    }
+    @if (SecondFilters is { Count: > 0 })
+    {
+        <label>@SecondFilterLabel
+            <select value="@(ReviewPager.QueryValue(Nav, "show2") ?? "")" @onchange='args => Set("show2", args.Value?.ToString())'>
+                <option value="">All</option>
+                @foreach (var option in SecondFilters) { <option value="@option.Key">@option.Value</option> }
+            </select>
+        </label>
+    }
+    @if (Sorts is { Count: > 0 })
+    {
+        <label>Sort
+            <select value="@(ReviewPager.QueryValue(Nav, "sort") ?? Sorts[0].Key)" @onchange='args => Set("sort", args.Value?.ToString() == Sorts[0].Key ? null : args.Value?.ToString())'>
+                @foreach (var option in Sorts) { <option value="@option.Key">@option.Value</option> }
+            </select>
+        </label>
+    }
+    @if (Shown < Total)
+    {
+        <span class="review-filter-count">@Shown of @Total shown</span>
+        <button class="review-filter-clear" @onclick="ClearAll">Clear filters</button>
+    }
+</div>
+
+@code {
+    [Parameter] public string Label { get; set; } = "Filter reviews";
+    [Parameter] public string SearchPlaceholder { get; set; } = "Search titles";
+    [Parameter] public string FilterLabel { get; set; } = "Show";
+    [Parameter] public IReadOnlyList<KeyValuePair<string, string>>? Filters { get; set; }
+    [Parameter] public string SecondFilterLabel { get; set; } = "Also";
+    [Parameter] public IReadOnlyList<KeyValuePair<string, string>>? SecondFilters { get; set; }
+    /// <summary>Sort options; the first is the default and is left out of the URL.</summary>
+    [Parameter] public IReadOnlyList<KeyValuePair<string, string>>? Sorts { get; set; }
+    [Parameter] public int Shown { get; set; }
+    [Parameter] public int Total { get; set; }
+
+    public static readonly string[] QueryKeys = ["search", "show", "show2", "sort"];
+
+    private string _search = string.Empty;
+    private CancellationTokenSource? _debounce;
+
+    protected override void OnParametersSet()
+    {
+        // Follow the URL unless the person is mid-typing (a debounce is pending).
+        if (_debounce is null) _search = ReviewPager.QueryValue(Nav, "search") ?? string.Empty;
+    }
+
+    private async Task OnSearchInput(ChangeEventArgs args)
+    {
+        _search = args.Value?.ToString() ?? string.Empty;
+        _debounce?.Cancel();
+        var debounce = _debounce = new CancellationTokenSource();
+        try { await Task.Delay(300, debounce.Token); } catch (TaskCanceledException) { return; }
+        _debounce = null;
+        Set("search", _search, replace: true);
+    }
+
+    private void OnSearchKey(KeyboardEventArgs args)
+    {
+        if (args.Key != "Escape") return;
+        _debounce?.Cancel(); _debounce = null;
+        _search = string.Empty;
+        Set("search", null, replace: true);
+    }
+
+    private void Set(string key, string? value, bool replace = false) =>
+        Nav.NavigateTo(Nav.GetUriWithQueryParameters(new Dictionary<string, object?>
+        {
+            [key] = string.IsNullOrWhiteSpace(value) ? null : value.Trim(),
+            ["page"] = null
+        }), replace: replace);
+
+    private void ClearAll()
+    {
+        _debounce?.Cancel(); _debounce = null;
+        _search = string.Empty;
+        var parameters = QueryKeys.Where(key => key != "sort").ToDictionary(key => key, _ => (object?)null);
+        parameters["page"] = null;
+        Nav.NavigateTo(Nav.GetUriWithQueryParameters(parameters));
+    }
+
+    /// <summary>True when every whitespace-separated word of the query appears in at least one of the texts.</summary>
+    public static bool Matches(string? query, params string?[] texts)
+    {
+        if (string.IsNullOrWhiteSpace(query)) return true;
+        return query.Split(' ', StringSplitOptions.RemoveEmptyEntries)
+            .All(word => texts.Any(text => text?.Contains(word, StringComparison.OrdinalIgnoreCase) == true));
+    }
+}
