@@ -482,14 +482,45 @@ public class AnimeCacheService(AnimeDbContext db, AniListApiService aniList, Jik
         var resolvedProviderIds = existingRows.SelectMany(row => new[]
             { row.AniListId is > 0 ? $"a:{row.AniListId}" : null, row.MALId is > 0 ? $"m:{row.MALId}" : null })
             .Where(key => key is not null).Select(key => key!).ToHashSet();
+        // Tracked rows by ID. Title matching scans the whole catalogue, but through
+        // untracked name-only stubs: loading and tracking every full row made each save in
+        // this batch run change detection over the entire catalogue. A stub is swapped
+        // for its tracked row only when it becomes a candidate or a target.
+        var tracked = existingRows.ToDictionary(row => row.Id);
+        var stubs = new HashSet<Anime>(ReferenceEqualityComparer.Instance);
+        var catalogueRows = existingRows;
         if (sources.Any(source => !resolvedProviderIds.Contains(Key(source)) &&
                                   (source.MALId is not > 0 || !resolvedProviderIds.Contains($"m:{source.MALId}"))))
-            existingRows = await db.Animes.Include(a => a.TitleAliases).ToListAsync(ct);
+        {
+            catalogueRows = await CatalogueNameStubsAsync(tracked.Keys, ct);
+            stubs.UnionWith(catalogueRows);
+            catalogueRows.AddRange(existingRows);
+        }
+
+        async Task<Anime> TrackedAsync(Anime row)
+        {
+            if (!stubs.Contains(row)) return row;
+            if (!tracked.TryGetValue(row.Id, out var full))
+                tracked[row.Id] = full = await db.Animes.Include(a => a.TitleAliases).FirstAsync(a => a.Id == row.Id, ct);
+            return full;
+        }
+
+        async Task<List<Anime>> TrackedListAsync(IEnumerable<Anime> rows)
+        {
+            var result = new List<Anime>();
+            foreach (var row in rows)
+            {
+                var full = await TrackedAsync(row);
+                if (!result.Any(known => ReferenceEquals(known, full) || (full.Id > 0 && known.Id == full.Id))) result.Add(full);
+            }
+            return result;
+        }
+
         var existing = new Dictionary<string, Anime>();
         var queuedReviews = new List<PendingAnimeReview>();
         List<AnimeMatchDecision>? decisions = null;
         var names = new CatalogueNameIndex();
-        foreach (var row in existingRows)
+        foreach (var row in catalogueRows)
         {
             if (row.AniListId is > 0) existing[$"a:{row.AniListId}"] = row;
             if (row.MALId is > 0) existing[$"m:{row.MALId}"] = row;
@@ -503,9 +534,10 @@ public class AnimeCacheService(AnimeDbContext db, AniListApiService aniList, Jik
                 // A person's earlier answer for this source outranks title evidence.
                 decisions ??= await db.AnimeMatchDecisions.AsNoTracking().ToListAsync(ct);
                 var rememberedSame = decisions.FirstOrDefault(decision => decision.IsSameAnime && decision.AppliesTo(source.AniListId, source.MALId));
-                var candidates = rememberedSame is not null && existingRows.FirstOrDefault(row => row.Id == rememberedSame.AnimeId) is { } same
-                    ? [same]
-                    : WithoutRejected(decisions, source, names.FindCandidates(source));
+                var candidates = await TrackedListAsync(
+                    rememberedSame is not null && catalogueRows.FirstOrDefault(row => row.Id == rememberedSame.AnimeId) is { } same
+                        ? [same]
+                        : WithoutRejected(decisions, source, names.FindCandidates(source)));
                 if (rememberedSame is not null && candidates.Count == 1 && candidates[0].Id == rememberedSame.AnimeId)
                     target = candidates[0];
                 else if (candidates.Count > 0)
@@ -513,7 +545,9 @@ public class AnimeCacheService(AnimeDbContext db, AniListApiService aniList, Jik
                     // Before asking a person, let AniList bridge the provider IDs:
                     // a shared ID confirms the row, a differing one rules it out.
                     await CompleteProviderIdsAsync(source, candidates, ct);
-                    if (!TryGetByProviderIds(existing, source, out target))
+                    if (TryGetByProviderIds(existing, source, out target))
+                        target = await TrackedAsync(target);
+                    else
                     {
                         await CandidateRelations.AttachAsync(db, candidates, ct);
                         candidates = ViableCandidates(source, candidates);
@@ -536,6 +570,7 @@ public class AnimeCacheService(AnimeDbContext db, AniListApiService aniList, Jik
                     db.Animes.Add(target);
                 }
             }
+            target = await TrackedAsync(target);
             Copy(target, source);
             await StoreTitleAliasesAsync(target, source, ct);
             if (source.AniListId is > 0) existing[$"a:{source.AniListId}"] = target;
@@ -547,7 +582,7 @@ public class AnimeCacheService(AnimeDbContext db, AniListApiService aniList, Jik
             target.CachedAt = DateTime.UtcNow;
         }
         await db.SaveChangesAsync(ct);
-        var persistedSources = sources.Where(source => existing.ContainsKey(Key(source))).ToList();
+        var persistedSources = sources.Where(source => existing.TryGetValue(Key(source), out var row) && !stubs.Contains(row)).ToList();
         var syncedIds = persistedSources.Select(source => existing[Key(source)].Id).Distinct().ToList();
         foreach (var source in persistedSources)
         {
@@ -574,6 +609,28 @@ public class AnimeCacheService(AnimeDbContext db, AniListApiService aniList, Jik
             }
         }
         return syncedIds;
+    }
+
+    /// <summary>
+    /// Untracked catalogue rows with only what title matching reads: IDs and names.
+    /// Rows in <paramref name="exclude"/> are already loaded and tracked.
+    /// </summary>
+    private async Task<List<Anime>> CatalogueNameStubsAsync(IEnumerable<int> exclude, CancellationToken ct)
+    {
+        var excluded = exclude.ToHashSet();
+        var rows = await db.Animes.AsNoTracking()
+            .Select(a => new { a.Id, a.AniListId, a.MALId, a.KitsuId, a.Title, a.OriginalTitle })
+            .ToListAsync(ct);
+        var aliases = (await db.AnimeTitleAliases.AsNoTracking()
+                .Select(alias => new { alias.AnimeId, alias.Title })
+                .ToListAsync(ct))
+            .ToLookup(alias => alias.AnimeId, alias => alias.Title);
+        return rows.Where(row => !excluded.Contains(row.Id)).Select(row => new Anime
+        {
+            Id = row.Id, AniListId = row.AniListId, MALId = row.MALId, KitsuId = row.KitsuId,
+            Title = row.Title, OriginalTitle = row.OriginalTitle,
+            TitleAliases = aliases[row.Id].Select(title => new AnimeTitleAlias { AnimeId = row.Id, Title = title }).ToList()
+        }).ToList();
     }
 
     private async Task<int> SeasonForSourceAsync(Anime source, int? fallbackSeasonId, CancellationToken ct)
@@ -1065,7 +1122,8 @@ public class AnimeCacheService(AnimeDbContext db, AniListApiService aniList, Jik
 
         var existing = (await db.AnimeImages.Where(image => image.AnimeId == target.Id).ToListAsync(ct))
             .ToDictionary(image => (image.Source, image.Type, image.ImageUrl));
-        var images = new List<AnimeImage>(candidates.Count);
+        // Downloads happen here, before any write, so ReplaceTagsAsync's transaction
+        // never stays open across HTTP requests. The rows are saved with the tags.
         foreach (var candidate in candidates)
         {
             if (!existing.TryGetValue((candidate.Source, candidate.Type, candidate.Url), out var image))
@@ -1073,17 +1131,19 @@ public class AnimeCacheService(AnimeDbContext db, AniListApiService aniList, Jik
                 image = new AnimeImage { AnimeId = target.Id, Source = candidate.Source, Type = candidate.Type, ImageUrl = candidate.Url };
                 db.AnimeImages.Add(image);
             }
-            images.Add(image);
-        }
-        await db.SaveChangesAsync(ct);
-        foreach (var image in images)
-        {
-            var candidate = candidates.First(item => item.Source == image.Source && item.Type == image.Type && item.Url == image.ImageUrl);
             image.LocalImagePath ??= await imageCache.CacheArtworkAsync(candidate.Url, target.Id, candidate.Source, candidate.Type);
         }
     }
+    /// <summary>
+    /// Replaces the title's tags and saves every pending change for it (including images
+    /// from <see cref="StoreImagesAsync"/>) in one transaction: one commit instead of one
+    /// per delete and save, which matters when a sync processes a whole season.
+    /// </summary>
     private async Task ReplaceTagsAsync(Anime target, Anime source, CancellationToken ct)
     {
+        await using var transaction = db.Database.CurrentTransaction is null
+            ? await db.Database.BeginTransactionAsync(ct)
+            : null;
         await db.AnimeGenres.Where(x => x.AnimeId == target.Id).ExecuteDeleteAsync(ct);
         await db.AnimeThemes.Where(x => x.AnimeId == target.Id).ExecuteDeleteAsync(ct);
         await db.AnimeDemographics.Where(x => x.AnimeId == target.Id).ExecuteDeleteAsync(ct);
@@ -1099,6 +1159,7 @@ public class AnimeCacheService(AnimeDbContext db, AniListApiService aniList, Jik
         foreach (var name in themeNames) { if (!themes.TryGetValue(name, out var tag)) { tag = new Theme { Name = name }; db.Themes.Add(tag); themes[name] = tag; } db.AnimeThemes.Add(new() { AnimeId = target.Id, Theme = tag }); }
         foreach (var name in demographicNames) { if (!demographics.TryGetValue(name, out var tag)) { tag = new Demographic { Name = name }; db.Demographics.Add(tag); demographics[name] = tag; } db.AnimeDemographics.Add(new() { AnimeId = target.Id, Demographic = tag }); }
         await db.SaveChangesAsync(ct);
+        if (transaction is not null) await transaction.CommitAsync(ct);
         InvalidateLookupCaches();
     }
 

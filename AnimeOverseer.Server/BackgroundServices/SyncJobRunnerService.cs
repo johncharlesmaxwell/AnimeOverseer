@@ -76,6 +76,15 @@ public class SyncJobRunnerService(
         using var jobCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         using var monitorCts = new CancellationTokenSource();
         var jobCancellationRequested = false;
+        void CancelJob()
+        {
+            jobCancellationRequested = true;
+            try { jobCts.Cancel(); }
+            catch (ObjectDisposedException) { }
+        }
+        // Cancel requests from SyncJobService arrive through the trigger immediately.
+        // The slow database check covers a flag set any other way.
+        using var cancelRegistration = syncJobTrigger.RegisterRunningJob(job.Id, CancelJob);
         var cancellationMonitor = MonitorCancellationAsync(
             job.Id,
             jobCts,
@@ -208,7 +217,7 @@ public class SyncJobRunnerService(
                     return;
                 }
 
-                await Task.Delay(TimeSpan.FromMilliseconds(500), ct);
+                await Task.Delay(TimeSpan.FromSeconds(10), ct);
             }
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { }

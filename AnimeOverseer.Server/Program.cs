@@ -11,9 +11,10 @@ builder.Services.AddControllers();
 builder.Services.AddRazorComponents()
     .AddInteractiveServerComponents();
 
+var sqlitePragmas = new SqlitePragmaInterceptor();
 builder.Services.AddDbContext<AnimeDbContext>(options =>
-    options.UseSqlite(builder.Configuration.GetConnectionString("DefaultConnection") ??
-        "Data Source=animeoverseer.db;Cache=Shared;Pooling=True;Default Timeout=30"));
+    options.UseSqlite(SqliteConnectionSetup.Normalize(builder.Configuration.GetConnectionString("DefaultConnection")))
+        .AddInterceptors(sqlitePragmas));
 builder.Services.AddMemoryCache();
 
 builder.Services.AddCors(options =>
@@ -68,7 +69,7 @@ using (var scope = app.Services.CreateScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<AnimeDbContext>();
     // WAL permits readers to continue while the catalogue sync commits a batch.
-    // Default Timeout in the connection string makes brief writer contention retry
+    // SqliteConnectionSetup adds a busy timeout so brief writer contention retries
     // rather than immediately surfacing as "database is locked".
     await db.Database.ExecuteSqlRawAsync("PRAGMA journal_mode=WAL;");
     await db.Database.MigrateAsync();

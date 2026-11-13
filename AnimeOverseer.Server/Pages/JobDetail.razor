@@ -243,16 +243,30 @@
         _cancelling = false;
     }
 
+    private DateTime _syncedAnimesLoadedAt = DateTime.MinValue;
+    // The synced-anime list is the heaviest read on this page, and it competes with the
+    // running job for the database, so it refreshes less often than the progress poll.
+    private static readonly TimeSpan SyncedAnimesRefreshInterval = TimeSpan.FromSeconds(10);
+
     private async Task RefreshAsync()
     {
         var job = await SyncJobService.GetByIdAsync(Id);
         if (job == null) { _notFound = true; return; }
-        var logs = await SyncJobService.GetLogsAsync(Id);
-        var syncedAnimes = await SyncJobService.GetSyncedAnimesAsync(job);
+        // Logs only ever append, so fetch just the ones not yet shown.
+        var newLogs = await SyncJobService.GetLogsAsync(Id, _logs.Count > 0 ? _logs[^1].Id : 0);
+        var active = job.Status is "Queued" or "Running";
+        var wasActive = _job?.Status is "Queued" or "Running";
+        var refreshSynced = _job == null || (wasActive && !active) ||
+                            (active && DateTime.UtcNow - _syncedAnimesLoadedAt >= SyncedAnimesRefreshInterval);
+        var syncedAnimes = refreshSynced ? await SyncJobService.GetSyncedAnimesAsync(Id) : _syncedAnimes;
         // Assign all fields without an await between them so no render sees mixed refresh data.
         _job = job;
-        _logs = logs;
-        _syncedAnimes = syncedAnimes;
+        if (newLogs.Count > 0) _logs = [.. _logs, .. newLogs];
+        if (refreshSynced)
+        {
+            _syncedAnimes = syncedAnimes;
+            _syncedAnimesLoadedAt = DateTime.UtcNow;
+        }
     }
 
     private static string FormatDateTime(DateTime dt)

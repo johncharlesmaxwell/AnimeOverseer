@@ -49,8 +49,7 @@ public class SyncService(AnimeDbContext db, IServiceScopeFactory scopeFactory, A
             {
                 ct.ThrowIfCancellationRequested();
                 job.ProcessedCount += count;
-                db.SyncJobs.Update(job);
-                db.Entry(job).Property(j => j.CancellationRequested).IsModified = false;
+                TrackJobProgress(job);
                 await db.SaveChangesAsync(CancellationToken.None);
             }
 
@@ -66,8 +65,7 @@ public class SyncService(AnimeDbContext db, IServiceScopeFactory scopeFactory, A
             // AnimeCacheService has already committed all anime data; clear any residual
             // tracked entities so only the job update and log entry are saved here.
             db.ChangeTracker.Clear();
-            db.SyncJobs.Update(job);
-            db.Entry(job).Property(j => j.CancellationRequested).IsModified = false;
+            TrackJobProgress(job, includeSyncedIds: true);
             Log(job, $"Completed {year} — {job.ProcessedCount:N0} anime fetched so far", "Success");
             await db.SaveChangesAsync(ct);
         }
@@ -75,8 +73,7 @@ public class SyncService(AnimeDbContext db, IServiceScopeFactory scopeFactory, A
         if (!ct.IsCancellationRequested)
         {
             db.ChangeTracker.Clear();
-            db.SyncJobs.Update(job);
-            db.Entry(job).Property(j => j.CancellationRequested).IsModified = false;
+            TrackJobProgress(job, includeSyncedIds: true);
             Log(job, $"Sync complete — {job.ProcessedCount:N0} anime processed", "Success");
             await db.SaveChangesAsync(ct);
         }
@@ -336,42 +333,49 @@ public class SyncService(AnimeDbContext db, IServiceScopeFactory scopeFactory, A
         await db.SaveChangesAsync(ct);
 
         var failures = new ImportFailures("AniList recommendation", logger, db, job);
-        foreach (var animeId in animeIds)
+        var checkpoint = new ProgressCheckpoint();
+        try
         {
-            ct.ThrowIfCancellationRequested();
-            try
+            foreach (var animeId in animeIds)
             {
-                // A fresh scope ensures a failed record cannot leave tracked changes
-                // behind for the next one.
-                using var cacheScope = scopeFactory.CreateScope();
-                var cache = cacheScope.ServiceProvider.GetRequiredService<AnimeCacheService>();
-                await cache.FetchAndStoreRecommendationsAsync(animeId, ct);
-                syncedIds.Add(animeId);
-                failures.RecordSuccess();
-            }
-            catch (OperationCanceledException) when (ct.IsCancellationRequested)
-            {
-                throw;
-            }
-            catch (Exception ex)
-            {
-                failures.Record(animeId, ex);
-            }
+                ct.ThrowIfCancellationRequested();
+                try
+                {
+                    // A fresh scope ensures a failed record cannot leave tracked changes
+                    // behind for the next one.
+                    using var cacheScope = scopeFactory.CreateScope();
+                    var cache = cacheScope.ServiceProvider.GetRequiredService<AnimeCacheService>();
+                    await cache.FetchAndStoreRecommendationsAsync(animeId, ct);
+                    syncedIds.Add(animeId);
+                    failures.RecordSuccess();
+                }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    failures.Record(animeId, ex);
+                }
 
-            job.SyncedAnimeIds = JsonSerializer.Serialize(syncedIds);
-            job.ProcessedCount++;
-            if (job.ProcessedCount % 20 == 0 || job.ProcessedCount == job.TotalCount)
-                Log(job, $"Progress: {job.ProcessedCount:N0} / {job.TotalCount:N0}{failures.ProgressSuffix}");
-            if (failures.CircuitBreakerReason(job.ProcessedCount) is { } circuitBreakerReason)
-            {
-                Log(job, circuitBreakerReason, "Error");
-                await db.SaveChangesAsync(ct);
-                throw new InvalidOperationException(circuitBreakerReason);
+                job.ProcessedCount++;
+                if (job.ProcessedCount % 20 == 0 || job.ProcessedCount == job.TotalCount)
+                    Log(job, $"Progress: {job.ProcessedCount:N0} / {job.TotalCount:N0}{failures.ProgressSuffix}");
+                if (failures.CircuitBreakerReason(job.ProcessedCount) is { } circuitBreakerReason)
+                {
+                    Log(job, circuitBreakerReason, "Error");
+                    job.SyncedAnimeIds = JsonSerializer.Serialize(syncedIds);
+                    await db.SaveChangesAsync(ct);
+                    throw new InvalidOperationException(circuitBreakerReason);
+                }
+                await SaveCheckpointAsync(job, syncedIds, checkpoint, ct);
+                // AniListApiService coordinates the global request rate and retries 429s.
             }
-            // Save every attempted source ID so a record-specific failure does not
-            // prevent the rest of this run from completing.
-            await db.SaveChangesAsync(ct);
-            // AniListApiService coordinates the global request rate and retries 429s.
+        }
+        finally
+        {
+            // The runner persists this with the job's final status, even on cancellation.
+            job.SyncedAnimeIds = JsonSerializer.Serialize(syncedIds);
         }
         Log(job, failures.Summary(job.ProcessedCount), failures.Count > 0 ? "Warning" : "Success");
         await db.SaveChangesAsync(ct);
@@ -397,70 +401,78 @@ public class SyncService(AnimeDbContext db, IServiceScopeFactory scopeFactory, A
 
         var failures = new ImportFailures("AniList provider ID", logger, db, job);
         var backfill = new Dictionary<ProviderIdBackfillOutcome, int>();
-        foreach (var animeId in animeIds)
-        {
-            ct.ThrowIfCancellationRequested();
-            try
-            {
-                using var cacheScope = scopeFactory.CreateScope();
-                var cache = cacheScope.ServiceProvider.GetRequiredService<AnimeCacheService>();
-                var result = await cache.BackfillProviderIdsAsync(animeId, ct);
-                backfill[result.Outcome] = backfill.GetValueOrDefault(result.Outcome) + 1;
-                if (result.Outcome == ProviderIdBackfillOutcome.Filled) syncedIds.Add(animeId);
-                if (result.DuplicateAnimeId is int duplicate)
-                    Log(job, $"Anime #{animeId} and #{duplicate} resolve to the same provider anime; left unchanged as likely duplicates", "Warning");
-                failures.RecordSuccess();
-            }
-            catch (OperationCanceledException) when (ct.IsCancellationRequested)
-            {
-                throw;
-            }
-            catch (Exception ex)
-            {
-                failures.Record(animeId, ex);
-            }
-
-            job.SyncedAnimeIds = JsonSerializer.Serialize(syncedIds);
-            job.ProcessedCount++;
-            if (job.ProcessedCount % 20 == 0) Log(job, $"Progress: {job.ProcessedCount:N0} / {job.TotalCount:N0}{failures.ProgressSuffix}");
-            if (failures.CircuitBreakerReason(job.ProcessedCount) is { } circuitBreakerReason)
-            {
-                Log(job, circuitBreakerReason, "Error");
-                await db.SaveChangesAsync(ct);
-                throw new InvalidOperationException(circuitBreakerReason);
-            }
-            await db.SaveChangesAsync(ct);
-        }
-        if (animeIds.Count > 0)
-            Log(job, $"Provider IDs filled for {backfill.GetValueOrDefault(ProviderIdBackfillOutcome.Filled):N0} anime; " +
-                     $"{backfill.GetValueOrDefault(ProviderIdBackfillOutcome.NotFound):N0} not found on AniList; " +
-                     $"{backfill.GetValueOrDefault(ProviderIdBackfillOutcome.Duplicate):N0} likely duplicates", "Success");
-
         var rechecked = new Dictionary<PendingReviewRecheckOutcome, int>();
-        foreach (var reviewId in reviewIds)
+        var checkpoint = new ProgressCheckpoint();
+        try
         {
-            ct.ThrowIfCancellationRequested();
-            try
+            foreach (var animeId in animeIds)
             {
-                using var cacheScope = scopeFactory.CreateScope();
-                var cache = cacheScope.ServiceProvider.GetRequiredService<AnimeCacheService>();
-                var outcome = await cache.RecheckPendingReviewAsync(reviewId, ct);
-                rechecked[outcome] = rechecked.GetValueOrDefault(outcome) + 1;
-                failures.RecordSuccess();
-            }
-            catch (OperationCanceledException) when (ct.IsCancellationRequested)
-            {
-                throw;
-            }
-            catch (Exception ex)
-            {
-                logger.LogWarning(ex, "Provider ID recheck failed for pending review {ReviewId}", reviewId);
-                Log(job, $"Pending review #{reviewId} could not be rechecked: {ex.Message}", "Warning");
-            }
+                ct.ThrowIfCancellationRequested();
+                try
+                {
+                    using var cacheScope = scopeFactory.CreateScope();
+                    var cache = cacheScope.ServiceProvider.GetRequiredService<AnimeCacheService>();
+                    var result = await cache.BackfillProviderIdsAsync(animeId, ct);
+                    backfill[result.Outcome] = backfill.GetValueOrDefault(result.Outcome) + 1;
+                    if (result.Outcome == ProviderIdBackfillOutcome.Filled) syncedIds.Add(animeId);
+                    if (result.DuplicateAnimeId is int duplicate)
+                        Log(job, $"Anime #{animeId} and #{duplicate} resolve to the same provider anime; left unchanged as likely duplicates", "Warning");
+                    failures.RecordSuccess();
+                }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    failures.Record(animeId, ex);
+                }
 
-            job.ProcessedCount++;
-            if (job.ProcessedCount % 20 == 0) Log(job, $"Progress: {job.ProcessedCount:N0} / {job.TotalCount:N0}{failures.ProgressSuffix}");
-            await db.SaveChangesAsync(ct);
+                job.ProcessedCount++;
+                if (job.ProcessedCount % 20 == 0) Log(job, $"Progress: {job.ProcessedCount:N0} / {job.TotalCount:N0}{failures.ProgressSuffix}");
+                if (failures.CircuitBreakerReason(job.ProcessedCount) is { } circuitBreakerReason)
+                {
+                    Log(job, circuitBreakerReason, "Error");
+                    job.SyncedAnimeIds = JsonSerializer.Serialize(syncedIds);
+                    await db.SaveChangesAsync(ct);
+                    throw new InvalidOperationException(circuitBreakerReason);
+                }
+                await SaveCheckpointAsync(job, syncedIds, checkpoint, ct);
+            }
+            if (animeIds.Count > 0)
+                Log(job, $"Provider IDs filled for {backfill.GetValueOrDefault(ProviderIdBackfillOutcome.Filled):N0} anime; " +
+                         $"{backfill.GetValueOrDefault(ProviderIdBackfillOutcome.NotFound):N0} not found on AniList; " +
+                         $"{backfill.GetValueOrDefault(ProviderIdBackfillOutcome.Duplicate):N0} likely duplicates", "Success");
+
+            foreach (var reviewId in reviewIds)
+            {
+                ct.ThrowIfCancellationRequested();
+                try
+                {
+                    using var cacheScope = scopeFactory.CreateScope();
+                    var cache = cacheScope.ServiceProvider.GetRequiredService<AnimeCacheService>();
+                    var outcome = await cache.RecheckPendingReviewAsync(reviewId, ct);
+                    rechecked[outcome] = rechecked.GetValueOrDefault(outcome) + 1;
+                    failures.RecordSuccess();
+                }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    logger.LogWarning(ex, "Provider ID recheck failed for pending review {ReviewId}", reviewId);
+                    Log(job, $"Pending review #{reviewId} could not be rechecked: {ex.Message}", "Warning");
+                }
+
+                job.ProcessedCount++;
+                if (job.ProcessedCount % 20 == 0) Log(job, $"Progress: {job.ProcessedCount:N0} / {job.TotalCount:N0}{failures.ProgressSuffix}");
+                await SaveCheckpointAsync(job, syncedIds, checkpoint, ct);
+            }
+        }
+        finally
+        {
+            job.SyncedAnimeIds = JsonSerializer.Serialize(syncedIds);
         }
         Log(job, $"Pending reviews rechecked — {rechecked.GetValueOrDefault(PendingReviewRecheckOutcome.Merged):N0} merged, " +
                  $"{rechecked.GetValueOrDefault(PendingReviewRecheckOutcome.Created):N0} created, " +
@@ -481,39 +493,47 @@ public class SyncService(AnimeDbContext db, IServiceScopeFactory scopeFactory, A
         await db.SaveChangesAsync(ct);
 
         var failures = new ImportFailures("AniList relation", logger, db, job);
-        foreach (var animeId in animeIds)
+        var checkpoint = new ProgressCheckpoint();
+        try
         {
-            ct.ThrowIfCancellationRequested();
-            try
+            foreach (var animeId in animeIds)
             {
-                // A fresh scope ensures a failed record cannot leave tracked changes
-                // behind for the next one.
-                using var cacheScope = scopeFactory.CreateScope();
-                var cache = cacheScope.ServiceProvider.GetRequiredService<AnimeCacheService>();
-                await cache.FetchAndStoreRelationsAsync(animeId, ct);
-                syncedIds.Add(animeId);
-                failures.RecordSuccess();
-            }
-            catch (OperationCanceledException) when (ct.IsCancellationRequested)
-            {
-                throw;
-            }
-            catch (Exception ex)
-            {
-                failures.Record(animeId, ex);
-            }
+                ct.ThrowIfCancellationRequested();
+                try
+                {
+                    // A fresh scope ensures a failed record cannot leave tracked changes
+                    // behind for the next one.
+                    using var cacheScope = scopeFactory.CreateScope();
+                    var cache = cacheScope.ServiceProvider.GetRequiredService<AnimeCacheService>();
+                    await cache.FetchAndStoreRelationsAsync(animeId, ct);
+                    syncedIds.Add(animeId);
+                    failures.RecordSuccess();
+                }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    failures.Record(animeId, ex);
+                }
 
-            job.SyncedAnimeIds = JsonSerializer.Serialize(syncedIds);
-            job.ProcessedCount++;
-            if (job.ProcessedCount % 20 == 0 || job.ProcessedCount == job.TotalCount)
-                Log(job, $"Progress: {job.ProcessedCount:N0} / {job.TotalCount:N0}{failures.ProgressSuffix}");
-            if (failures.CircuitBreakerReason(job.ProcessedCount) is { } circuitBreakerReason)
-            {
-                Log(job, circuitBreakerReason, "Error");
-                await db.SaveChangesAsync(ct);
-                throw new InvalidOperationException(circuitBreakerReason);
+                job.ProcessedCount++;
+                if (job.ProcessedCount % 20 == 0 || job.ProcessedCount == job.TotalCount)
+                    Log(job, $"Progress: {job.ProcessedCount:N0} / {job.TotalCount:N0}{failures.ProgressSuffix}");
+                if (failures.CircuitBreakerReason(job.ProcessedCount) is { } circuitBreakerReason)
+                {
+                    Log(job, circuitBreakerReason, "Error");
+                    job.SyncedAnimeIds = JsonSerializer.Serialize(syncedIds);
+                    await db.SaveChangesAsync(ct);
+                    throw new InvalidOperationException(circuitBreakerReason);
+                }
+                await SaveCheckpointAsync(job, syncedIds, checkpoint, ct);
             }
-            await db.SaveChangesAsync(ct);
+        }
+        finally
+        {
+            job.SyncedAnimeIds = JsonSerializer.Serialize(syncedIds);
         }
         Log(job, failures.Summary(job.ProcessedCount), failures.Count > 0 ? "Warning" : "Success");
         await db.SaveChangesAsync(ct);
@@ -543,22 +563,59 @@ public class SyncService(AnimeDbContext db, IServiceScopeFactory scopeFactory, A
                 async count =>
                 {
                     job.ProcessedCount += count;
-                    db.SyncJobs.Update(job);
-                    db.Entry(job).Property(j => j.CancellationRequested).IsModified = false;
+                    TrackJobProgress(job);
                     await db.SaveChangesAsync(CancellationToken.None);
                 },
                 ct);
             syncedIds.UnionWith(ids);
             job.SyncedAnimeIds = JsonSerializer.Serialize(syncedIds);
             db.ChangeTracker.Clear();
-            db.SyncJobs.Update(job);
-            db.Entry(job).Property(j => j.CancellationRequested).IsModified = false;
+            TrackJobProgress(job, includeSyncedIds: true);
             Log(job, $"Completed {year} — {job.ProcessedCount:N0} anime fetched so far", "Success");
             await db.SaveChangesAsync(ct);
         }
 
         Log(job, $"{sourceName} sync complete — {job.ProcessedCount:N0} anime processed", "Success");
         await db.SaveChangesAsync(ct);
+    }
+
+    // Each save is its own write transaction, so per-record saves made long jobs compete
+    // with page reads. Progress is persisted at most this often; the job page polls every 2s.
+    private static readonly TimeSpan ProgressSaveInterval = TimeSpan.FromSeconds(2);
+
+    private sealed class ProgressCheckpoint
+    {
+        private long _lastSave = Environment.TickCount64;
+
+        public bool Due()
+        {
+            var now = Environment.TickCount64;
+            if (now - _lastSave < ProgressSaveInterval.TotalMilliseconds) return false;
+            _lastSave = now;
+            return true;
+        }
+    }
+
+    private async Task SaveCheckpointAsync(SyncJob job, HashSet<int> syncedIds, ProgressCheckpoint checkpoint, CancellationToken ct)
+    {
+        if (!checkpoint.Due()) return;
+        job.SyncedAnimeIds = JsonSerializer.Serialize(syncedIds);
+        await db.SaveChangesAsync(ct);
+    }
+
+    /// <summary>
+    /// Tracks the job for a progress save, re-attaching it after ChangeTracker.Clear().
+    /// Only the progress columns are marked, so a save does not rewrite the whole row
+    /// (in particular the synced-ID list, which grows with every page).
+    /// </summary>
+    private void TrackJobProgress(SyncJob job, bool includeSyncedIds = false)
+    {
+        var entry = db.Entry(job);
+        if (entry.State == EntityState.Detached) db.SyncJobs.Attach(job);
+        entry.Property(j => j.ProcessedCount).IsModified = true;
+        entry.Property(j => j.TotalCount).IsModified = true;
+        entry.Property(j => j.Message).IsModified = true;
+        if (includeSyncedIds) entry.Property(j => j.SyncedAnimeIds).IsModified = true;
     }
 
     private static HashSet<int> GetSyncedIds(SyncJob job)

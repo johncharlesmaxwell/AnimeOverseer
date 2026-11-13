@@ -117,12 +117,30 @@ public class SyncJobService(AnimeDbContext db, SyncJobTrigger syncJobTrigger)
         }
 
         await db.SaveChangesAsync();
+        // The flag is saved first so the runner records the job as Cancelled.
+        if (job.CancellationRequested) syncJobTrigger.RequestCancellation(jobId);
         return true;
     }
 
+    // Job lists and the job page poll while a job runs. SyncedAnimeIds can hold thousands
+    // of IDs, so polled reads leave it out; only the synced-anime list reads it.
+    private IQueryable<SyncJob> JobSummaries() => db.SyncJobs.AsNoTracking().Select(j => new SyncJob
+    {
+        Id = j.Id,
+        JobType = j.JobType,
+        Status = j.Status,
+        QueuedAt = j.QueuedAt,
+        StartedAt = j.StartedAt,
+        FinishedAt = j.FinishedAt,
+        ProcessedCount = j.ProcessedCount,
+        TotalCount = j.TotalCount,
+        CancellationRequested = j.CancellationRequested,
+        Message = j.Message,
+        Parameters = j.Parameters
+    });
+
     public async Task<List<SyncJob>> GetRecentAsync(int skip = 0, int count = 30)
-        => await db.SyncJobs
-            .AsNoTracking()
+        => await JobSummaries()
             .OrderByDescending(j => j.QueuedAt)
             .Skip(skip)
             .Take(count)
@@ -131,23 +149,26 @@ public class SyncJobService(AnimeDbContext db, SyncJobTrigger syncJobTrigger)
     public Task<int> GetCountAsync()
         => db.SyncJobs.CountAsync();
 
+    /// <summary>The job without its synced-ID list; use <see cref="GetSyncedAnimesAsync"/> for that.</summary>
     public async Task<SyncJob?> GetByIdAsync(int id)
-        => await db.SyncJobs.AsNoTracking().FirstOrDefaultAsync(j => j.Id == id);
+        => await JobSummaries().FirstOrDefaultAsync(j => j.Id == id);
 
-    public async Task<List<SyncJobLog>> GetLogsAsync(int jobId)
+    /// <summary>Logs for a job, optionally only those added after <paramref name="afterLogId"/>.</summary>
+    public async Task<List<SyncJobLog>> GetLogsAsync(int jobId, int afterLogId = 0)
         => await db.SyncJobLogs
             .AsNoTracking()
-            .Where(l => l.SyncJobId == jobId)
-            .OrderBy(l => l.Timestamp)
-            .ThenBy(l => l.Id)
+            .Where(l => l.SyncJobId == jobId && l.Id > afterLogId)
+            .OrderBy(l => l.Id)
             .ToListAsync();
 
-    public async Task<List<Anime>> GetSyncedAnimesAsync(SyncJob job)
+    /// <summary>The anime a job handled, with only the fields a synced-anime card shows.</summary>
+    public async Task<List<Anime>> GetSyncedAnimesAsync(int jobId)
     {
-        if (string.IsNullOrWhiteSpace(job.SyncedAnimeIds)) return [];
+        var json = await db.SyncJobs.AsNoTracking().Where(j => j.Id == jobId).Select(j => j.SyncedAnimeIds).FirstOrDefaultAsync();
+        if (string.IsNullOrWhiteSpace(json)) return [];
 
         List<int>? ids;
-        try { ids = JsonSerializer.Deserialize<List<int>>(job.SyncedAnimeIds); }
+        try { ids = JsonSerializer.Deserialize<List<int>>(json); }
         catch (JsonException) { return []; }
         if (ids is not { Count: > 0 }) return [];
 
@@ -156,6 +177,7 @@ public class SyncJobService(AnimeDbContext db, SyncJobTrigger syncJobTrigger)
             .ToDictionary(group => group.Key, group => group.First().index);
         var animes = await db.Animes.AsNoTracking()
             .Where(a => ids.Contains(a.Id))
+            .Select(a => new Anime { Id = a.Id, Title = a.Title, ImageUrl = a.ImageUrl, LocalImagePath = a.LocalImagePath })
             .ToListAsync();
 
         // Dictionary lookups are not translatable to SQL, so preserve the job's
