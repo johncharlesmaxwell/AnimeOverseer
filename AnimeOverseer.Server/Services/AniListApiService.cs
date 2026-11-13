@@ -65,9 +65,14 @@ public class AniListApiService(HttpClient httpClient, ILogger<AniListApiService>
         var result = new List<Anime>();
         for (var page = 1; result.Count < maximumItems; page++)
         {
+            // AniList treats an explicit null filter (e.g. "status": null) as matching nothing,
+            // so unset filters must be omitted from the variables rather than sent as null.
+            var variables = new Dictionary<string, object> { ["page"] = page, ["sort"] = new[] { sort } };
+            if (format is not null) variables["format"] = format;
+            if (status is not null) variables["status"] = status;
             var data = await QueryAsync(@"query ($page: Int!, $format: MediaFormat, $status: MediaStatus, $sort: [MediaSort!]) {
                 Page(page: $page, perPage: 50) { pageInfo { hasNextPage } media(type: ANIME, format: $format, status: $status, sort: $sort) { " + MediaFields + " } } }",
-                new { page, format, status, sort = new[] { sort } }, ct);
+                variables, ct);
             var pageData = data.GetProperty("Page");
             result.AddRange(pageData.GetProperty("media").EnumerateArray().Select(MapFromAniList));
             if (!pageData.GetProperty("pageInfo").GetProperty("hasNextPage").GetBoolean()) break;
