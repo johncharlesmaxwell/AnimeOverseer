@@ -49,6 +49,7 @@ builder.Services.AddScoped<IntegrationScheduleService>();
 builder.Services.AddScoped<SyncService>();
 builder.Services.AddHostedService<SyncJobRunnerService>();
 builder.Services.AddHostedService<IntegrationScheduleServiceWorker>();
+builder.Services.AddHostedService<DatabaseMaintenanceService>();
 
 var app = builder.Build();
 

@@ -31,13 +31,13 @@ public abstract class SqliteIntegrationTestBase : IDisposable
         return season;
     }
 
-    protected static AnimeCacheService CreateCache(AnimeDbContext db, HttpMessageHandler? handler = null)
+    protected static AnimeCacheService CreateCache(AnimeDbContext db, HttpMessageHandler? handler = null, IMemoryCache? memoryCache = null)
     {
         var client = new HttpClient(handler ?? new FailingHandler());
         var aniList = new AniListApiService(client, NullLogger<AniListApiService>.Instance);
         var jikan = new JikanApiService(client, NullLogger<JikanApiService>.Instance);
         var imageCache = new ImageCacheService(new TestHttpClientFactory(client), new TestWebHostEnvironment());
-        return new AnimeCacheService(db, aniList, jikan, imageCache, new MemoryCache(new MemoryCacheOptions()));
+        return new AnimeCacheService(db, aniList, jikan, imageCache, memoryCache ?? new MemoryCache(new MemoryCacheOptions()));
     }
 
     protected static Anime Incoming(int aniListId, string title, bool english, List<string>? aliases = null, List<SourceImage>? images = null)

@@ -143,6 +143,9 @@ public class AnimeDbContext : DbContext
 
         modelBuilder.Entity<PendingAnimeReview>()
             .HasIndex(review => new { review.Status, review.CreatedAt });
+        modelBuilder.Entity<PendingAnimeReview>().HasIndex(review => review.SourceAniListId);
+        modelBuilder.Entity<PendingAnimeReview>().HasIndex(review => review.SourceMalId);
+        modelBuilder.Entity<SyncJobLog>().HasIndex(log => new { log.SyncJobId, log.Id });
 
         modelBuilder.Entity<AnimeMatchDecision>()
             .HasOne<Anime>()

@@ -112,14 +112,19 @@ public sealed class AnimeReviewService(AnimeDbContext db, AnimeCacheService cach
     /// Names each record whose sources settle its English name, and takes it out of name
     /// review. Records a person has named are never touched; records the pre-check named
     /// earlier are rechecked, and go back to review if their sources no longer settle it.
+    /// Pass <paramref name="animeIds"/> to check only those records, as after a sync job
+    /// (only the records it touched can have new source names); omit it for a full sweep,
+    /// as when the settings change.
     /// </summary>
-    public async Task<EnglishNamePrecheckResult> ApplyEnglishNamePrecheckAsync(EnglishNameSettings? settings = null, CancellationToken ct = default)
+    public async Task<EnglishNamePrecheckResult> ApplyEnglishNamePrecheckAsync(EnglishNameSettings? settings = null, CancellationToken ct = default, IReadOnlyCollection<int>? animeIds = null)
     {
         settings ??= await EnglishNameSettings.LoadAsync(db, ct);
-        var anime = await db.Animes
+        if (animeIds is { Count: 0 }) return new(0, 0, 0);
+        var query = db.Animes.Where(item => (!item.NamesReviewed || item.NameFromSources) && item.SourceTitles.Any());
+        if (animeIds is not null) query = query.Where(item => animeIds.Contains(item.Id));
+        var anime = await query
             .Include(item => item.TitleAliases)
             .Include(item => item.SourceTitles)
-            .Where(item => (!item.NamesReviewed || item.NameFromSources) && item.SourceTitles.Any())
             .AsSplitQuery()
             .ToListAsync(ct);
         int renamed = 0, confirmed = 0, returned = 0;

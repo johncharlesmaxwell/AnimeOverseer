@@ -162,7 +162,11 @@ public class SyncJobRunnerService(
         {
             var settings = await EnglishNameSettings.LoadAsync(db, ct);
             if (!settings.Enabled) return;
-            var result = await services.GetRequiredService<AnimeReviewService>().ApplyEnglishNamePrecheckAsync(settings, ct);
+            // Only the anime this job touched can have new source names; a full sweep runs
+            // from the name review page when the settings change.
+            var syncedIds = SyncedIds(job);
+            if (syncedIds.Count == 0) return;
+            var result = await services.GetRequiredService<AnimeReviewService>().ApplyEnglishNamePrecheckAsync(settings, ct, syncedIds);
             if (result.Total + result.ReturnedToReview == 0) return;
             db.SyncJobLogs.Add(new SyncJobLog
             {
@@ -177,6 +181,13 @@ public class SyncJobRunnerService(
         {
             logger.LogWarning(ex, "English-name pre-check after sync job {Id} failed", job.Id);
         }
+    }
+
+    private static List<int> SyncedIds(SyncJob job)
+    {
+        if (string.IsNullOrWhiteSpace(job.SyncedAnimeIds)) return [];
+        try { return System.Text.Json.JsonSerializer.Deserialize<List<int>>(job.SyncedAnimeIds) ?? []; }
+        catch (System.Text.Json.JsonException) { return []; }
     }
 
     private static string FormatError(Exception exception)

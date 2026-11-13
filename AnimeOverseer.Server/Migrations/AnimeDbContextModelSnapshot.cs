@@ -630,6 +630,8 @@ namespace AnimeOverseer.Server.Migrations
 
                     b.HasKey("Id");
 
+                    b.HasIndex("SourceAniListId");
+                    b.HasIndex("SourceMalId");
                     b.HasIndex("Status", "CreatedAt");
                     b.ToTable("PendingAnimeReviews");
                 });
@@ -701,6 +703,8 @@ namespace AnimeOverseer.Server.Migrations
                         .HasColumnType("TEXT");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("SyncJobId", "Id");
 
                     b.ToTable("SyncJobLogs");
                 });
